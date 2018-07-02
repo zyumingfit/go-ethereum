@@ -106,6 +106,7 @@ func (d *Downloader) runStateSync(s *stateSync) *stateSync {
 	go s.run()
 	defer s.Cancel()
 
+	//注册p2p节点丢弃事件
 	// Listen for peer departure events to cancel assigned tasks
 	peerDrop := make(chan *peerConnection, 1024)
 	peerSub := s.d.peers.SubscribePeerDrops(peerDrop)
@@ -124,6 +125,7 @@ func (d *Downloader) runStateSync(s *stateSync) *stateSync {
 
 		select {
 		// The stateSync lifecycle:
+		//另一个stateSync申请运行,当前的退出
 		case next := <-d.stateSyncStart:
 			return next
 
@@ -140,6 +142,7 @@ func (d *Downloader) runStateSync(s *stateSync) *stateSync {
 		// Handle incoming state packs:
 		case pack := <-d.stateCh:
 			// Discard any data not requested (or previously timed out)
+			//丢弃不是我请求的状态
 			req := active[pack.PeerId()]
 			if req == nil {
 				log.Debug("Unrequested node data", "peer", pack.PeerId(), "len", pack.Items())
@@ -153,13 +156,16 @@ func (d *Downloader) runStateSync(s *stateSync) *stateSync {
 			delete(active, pack.PeerId())
 
 			// Handle dropped peer connections:
+			//处理节点丢弃事件
 		case p := <-peerDrop:
 			// Skip if no request is currently pending
+			//如果丢弃的p2p节点不在有效的节点集合中(正在同步区块状态的p2p节点集合中不包含这个丢弃的节点)
 			req := active[p.id]
 			if req == nil {
 				continue
 			}
 			// Finalize the request and queue up for processing
+			//从同步区块状态的p2p节点集合删除丢弃的p2p节点
 			req.timer.Stop()
 			req.dropped = true
 
