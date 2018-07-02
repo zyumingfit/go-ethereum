@@ -181,29 +181,38 @@ func (config *TxPoolConfig) sanitize() TxPoolConfig {
 // The pool separates processable transactions (which can be applied to the
 // current state) and future transactions. Transactions move between those
 // two states over time as they are received and processed.
+
 type TxPool struct {
 	config       TxPoolConfig
 	chainconfig  *params.ChainConfig
 	chain        blockChain
-	gasPrice     *big.Int
-	txFeed       event.Feed
+	gasPrice     *big.Int   //最低的gasPrice设置
+	txFeed       event.Feed //通过txFeed来订阅TxPool的消息
 	scope        event.SubscriptionScope
-	chainHeadCh  chan ChainHeadEvent
-	chainHeadSub event.Subscription
-	signer       types.Signer
+	chainHeadCh  chan ChainHeadEvent//txpool订阅了区块头的消息，当有了新的区块头生成的时候会在这里收到通知
+	chainHeadSub event.Subscription//区块头的消息订阅器，通过它可以取消消息
+	signer       types.Signer //封装了事务签名处理
 	mu           sync.RWMutex
 
+	//头区块的状态接口
 	currentState  *state.StateDB      // Current state in the blockchain head
+	//pending列表的中的账户的nonce值管理
 	pendingState  *state.ManagedState // Pending state tracking virtual nonces
+	//交易的gas上限
 	currentMaxGas uint64              // Current gas limit for transaction caps
 
 	locals  *accountSet // Set of local transaction to exempt from eviction rules
 	journal *txJournal  // Journal of local transaction to back up to disk
 
+	//当前可以处理的交易
 	pending map[common.Address]*txList   // All currently processable transactions
+	//当前不可以处理的交易
 	queue   map[common.Address]*txList   // Queued but non-processable transactions
+	//每隔账号最后一次心跳时间
 	beats   map[common.Address]time.Time // Last heartbeat from each known account
+	//全局交易列表，可以查找到所有交易
 	all     *txLookup                    // All transactions to allow lookups
+	//所有交易按价格排序
 	priced  *txPricedList                // All transactions sorted by price
 
 	wg sync.WaitGroup // for shutdown sync
@@ -213,10 +222,17 @@ type TxPool struct {
 
 // NewTxPool creates a new transaction pool to gather, sort and filter inbound
 // transactions from the network.
+//主要功能:根据默认参数或外部参数初始化TxPool类
+//task1:初始化TxPool类
+//task2:订阅BlockChain更新事件
+//task3:启动事件监听Goroutine
 func NewTxPool(config TxPoolConfig, chainconfig *params.ChainConfig, chain blockChain) *TxPool {
 	// Sanitize the input to ensure no vulnerable gas prices are set
 	config = (&config).sanitize()
 
+	//--------------------------------------task1--------------------------------------
+	//task1:初始化TxPool类
+	//---------------------------------------------------------------------------------
 	// Create the transaction pool with its initial settings
 	pool := &TxPool{
 		config:      config,
@@ -245,11 +261,18 @@ func NewTxPool(config TxPoolConfig, chainconfig *params.ChainConfig, chain block
 			log.Warn("Failed to rotate transaction journal", "err", err)
 		}
 	}
+	//--------------------------------------task2--------------------------------------
+	//task2:订阅BlockChain更新事件
+	//---------------------------------------------------------------------------------
 	// Subscribe events from blockchain
 	pool.chainHeadSub = pool.chain.SubscribeChainHeadEvent(pool.chainHeadCh)
 
 	// Start the event loop and return
 	pool.wg.Add(1)
+
+	//--------------------------------------task3--------------------------------------
+	//task3:启动时间监听Goroutine
+	//---------------------------------------------------------------------------------
 	go pool.loop()
 
 	return pool
@@ -264,12 +287,15 @@ func (pool *TxPool) loop() {
 	// Start the stats reporting and transaction eviction tickers
 	var prevPending, prevQueued, prevStales int
 
+	//报告打印时钟,8秒
 	report := time.NewTicker(statsReportInterval)
 	defer report.Stop()
 
+	//处理超时交易时钟,1分钟
 	evict := time.NewTicker(evictionInterval)
 	defer evict.Stop()
 
+	//定时写日志时钟,1小时
 	journal := time.NewTicker(pool.config.Rejournal)
 	defer journal.Stop()
 
@@ -280,12 +306,14 @@ func (pool *TxPool) loop() {
 	for {
 		select {
 		// Handle ChainHeadEvent
+		//如果有本地规范链有更新
 		case ev := <-pool.chainHeadCh:
 			if ev.Block != nil {
 				pool.mu.Lock()
 				if pool.chainconfig.IsHomestead(ev.Block.Number()) {
 					pool.homestead = true
 				}
+				//使用最新区块头重置交易池
 				pool.reset(head.Header(), ev.Block.Header())
 				head = ev.Block
 
@@ -296,6 +324,7 @@ func (pool *TxPool) loop() {
 			return
 
 		// Handle stats reporting ticks
+		//如果交易池状态有变更,打印最新状态(pending长度,queue长度,stales大小)
 		case <-report.C:
 			pool.mu.RLock()
 			pending, queued := pool.stats()
@@ -308,6 +337,8 @@ func (pool *TxPool) loop() {
 			}
 
 		// Handle inactive account transaction eviction
+
+		//删除queue中的超时交易,3小时没有处理的交易
 		case <-evict.C:
 			pool.mu.Lock()
 			for addr := range pool.queue {
@@ -325,6 +356,7 @@ func (pool *TxPool) loop() {
 			pool.mu.Unlock()
 
 		// Handle local transaction journal rotation
+		//定时写本地交易日志
 		case <-journal.C:
 			if pool.journal != nil {
 				pool.mu.Lock()
@@ -348,16 +380,27 @@ func (pool *TxPool) lockedReset(oldHead, newHead *types.Header) {
 
 // reset retrieves the current state of the blockchain and ensures the content
 // of the transaction pool is valid with regard to the chain state.
+//主要功能:由于规范链的更新，重新整理交易池
+//task1:找到由于规范链更新而作废的交易
+//task2:给交易池设置最新的世界状态
+//task3:把旧链回退回来的交易重新放入交易池
+//task4:因为规范链的更新,做一次降级处理
+//task5:因为规范链的更新,做一次升级处理
 func (pool *TxPool) reset(oldHead, newHead *types.Header) {
 	// If we're reorging an old state, reinject all dropped transactions
 	var reinject types.Transactions
 
+	//--------------------------------------task1--------------------------------------
+	//task1:找到由于规范链更新而作废的交易
+	//---------------------------------------------------------------------------------
+	//新区块头的父区块不等于老区快
 	if oldHead != nil && oldHead.Hash() != newHead.ParentHash {
 		// If the reorg is too deep, avoid doing it (will happen during fast sync)
 		oldNum := oldHead.Number.Uint64()
 		newNum := newHead.Number.Uint64()
 
 		if depth := uint64(math.Abs(float64(oldNum) - float64(newNum))); depth > 64 {
+			//新的头区块号与旧的头区块号差值大于64
 			log.Debug("Skipping deep transaction reorg", "depth", depth)
 		} else {
 			// Reorg seems shallow enough to pull in all transactions into memory
@@ -367,20 +410,25 @@ func (pool *TxPool) reset(oldHead, newHead *types.Header) {
 				rem = pool.chain.GetBlock(oldHead.Hash(), oldHead.Number.Uint64())
 				add = pool.chain.GetBlock(newHead.Hash(), newHead.Number.Uint64())
 			)
+			//如果旧链的头区块大于新链的头区块高度,旧链向后回退，同时收集所有旧链中被回退的交易
 			for rem.NumberU64() > add.NumberU64() {
 				discarded = append(discarded, rem.Transactions()...)
+				//如果旧区块的父区块为空直接退出
 				if rem = pool.chain.GetBlock(rem.ParentHash(), rem.NumberU64()-1); rem == nil {
 					log.Error("Unrooted old chain seen by tx pool", "block", oldHead.Number, "hash", oldHead.Hash())
 					return
 				}
 			}
+			//如果新链的头区块大于旧链的头区块高度,旧链向后回退，同时收集所有旧链中被回退的交易
 			for add.NumberU64() > rem.NumberU64() {
 				included = append(included, add.Transactions()...)
+				//如果旧区块的父区块为空直接退出
 				if add = pool.chain.GetBlock(add.ParentHash(), add.NumberU64()-1); add == nil {
 					log.Error("Unrooted new chain seen by tx pool", "block", newHead.Number, "hash", newHead.Hash())
 					return
 				}
 			}
+			//新旧链同时向后回退，并收集被回退的交易
 			for rem.Hash() != add.Hash() {
 				discarded = append(discarded, rem.Transactions()...)
 				if rem = pool.chain.GetBlock(rem.ParentHash(), rem.NumberU64()-1); rem == nil {
@@ -393,22 +441,32 @@ func (pool *TxPool) reset(oldHead, newHead *types.Header) {
 					return
 				}
 			}
+			//找discarded中那些不存在于included中的交易
 			reinject = types.TxDifference(discarded, included)
 		}
 	}
 	// Initialize the internal state to the current head
+	//不太可能发生
 	if newHead == nil {
 		newHead = pool.chain.CurrentBlock().Header() // Special case during testing
 	}
+	//--------------------------------------task2--------------------------------------
+	//task2:给交易池设置最新的世界状态
+	//---------------------------------------------------------------------------------
+	//获取新链头区块的状态
 	statedb, err := pool.chain.StateAt(newHead.Root)
 	if err != nil {
 		log.Error("Failed to reset txpool state", "err", err)
 		return
 	}
+	//设置新的currentState、pendingState、currentMaxGas
 	pool.currentState = statedb
 	pool.pendingState = state.ManageState(statedb)
 	pool.currentMaxGas = newHead.GasLimit
 
+	//--------------------------------------task3--------------------------------------
+	//task3:把旧链回退回来的交易重新放入交易池
+	//---------------------------------------------------------------------------------
 	// Inject any transactions discarded due to reorgs
 	log.Debug("Reinjecting stale transactions", "count", len(reinject))
 	senderCacher.recover(pool.signer, reinject)
@@ -418,6 +476,9 @@ func (pool *TxPool) reset(oldHead, newHead *types.Header) {
 	// any transactions that have been included in the block or
 	// have been invalidated because of another transaction (e.g.
 	// higher gas price)
+	//--------------------------------------task4--------------------------------------
+	//task4:因为规范链的更新,将pending中的部分交易移到queue里面
+	//---------------------------------------------------------------------------------
 	pool.demoteUnexecutables()
 
 	// Update all accounts to the latest known pending nonce
@@ -427,6 +488,9 @@ func (pool *TxPool) reset(oldHead, newHead *types.Header) {
 	}
 	// Check the queue and move transactions over to the pending if possible
 	// or remove those that have become invalid
+	//--------------------------------------task5--------------------------------------
+	//task5:因为规范链的更新,将queue里面的交易移入到pending里面
+	//---------------------------------------------------------------------------------
 	pool.promoteExecutables(nil)
 }
 
@@ -552,39 +616,71 @@ func (pool *TxPool) local() map[common.Address]types.Transactions {
 
 // validateTx checks whether a transaction is valid according to the consensus
 // rules and adheres to some heuristic limits of the local node (price and size).
+//主要功能:验证一个交易的合法性
+//task1: 如果交易size过大,返回错误
+//task2: 交易的转账值不能为负,否则返回错误
+//task3: 交易的gas值超过了当前规范连头区块的gas值
+//task4: 确保交易签名的正确性
+//task5: 在没有指定local参数或者本节点白名单中没有包含这个交易地址的情况下，交易的gas小于txpool的下限，返回错误
+//task6: 如果本地节点的最新状态中交易发起方的余额小于交易gas总消耗(value + tx.gasLimit *tx.gasprice),返回错误
+//task7: 如果固定gas消耗大于交易设置的gasLimit,返回错误
 func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
 	// Heuristic limit, reject transactions over 32KB to prevent DOS attacks
+	//--------------------------------------task1--------------------------------------
+	//task1: 如果交易size过大,返回错误
+	//---------------------------------------------------------------------------------
 	if tx.Size() > 32*1024 {
 		return ErrOversizedData
 	}
 	// Transactions can't be negative. This may never happen using RLP decoded
 	// transactions but may occur if you create a transaction using the RPC.
+	//--------------------------------------task2--------------------------------------
+	//task2: 交易的转账值不能为负,否则返回错误
+	//---------------------------------------------------------------------------------
 	if tx.Value().Sign() < 0 {
 		return ErrNegativeValue
 	}
 	// Ensure the transaction doesn't exceed the current block limit gas.
+	//--------------------------------------task3--------------------------------------
+	//task3: 交易的gas值超过了当前规范连头区块的gas值
+	//---------------------------------------------------------------------------------
 	if pool.currentMaxGas < tx.Gas() {
 		return ErrGasLimit
 	}
 	// Make sure the transaction is signed properly
+	//--------------------------------------task4--------------------------------------
+	//task4: 确保交易签名的正确性
+	//---------------------------------------------------------------------------------
 	from, err := types.Sender(pool.signer, tx)
 	if err != nil {
 		return ErrInvalidSender
 	}
 	// Drop non-local transactions under our own minimal accepted gas price
+	//--------------------------------------task5--------------------------------------
+	//task5: 在没有指定local参数或者本节点白名单中没有包含这个交易地址的情况下，交易的gas小于txpool的下限，返回错误
+	//---------------------------------------------------------------------------------
 	local = local || pool.locals.contains(from) // account may be local even if the transaction arrived from the network
 	if !local && pool.gasPrice.Cmp(tx.GasPrice()) > 0 {
 		return ErrUnderpriced
 	}
+	//--------------------------------------task5--------------------------------------
+	//task5: 如果交易的nonce值小于本节点最新状态中交易发起方账号的nonce值计数，则直接返回
+	//---------------------------------------------------------------------------------
 	// Ensure the transaction adheres to nonce ordering
 	if pool.currentState.GetNonce(from) > tx.Nonce() {
 		return ErrNonceTooLow
 	}
 	// Transactor should have enough funds to cover the costs
 	// cost == V + GP * GL
+	//--------------------------------------task6--------------------------------------
+	//task6: 如果本地节点的最新状态中交易发起方的余额小于交易gas总消耗(value + tx.gasLimit *tx.gasprice),返回错误
+	//---------------------------------------------------------------------------------
 	if pool.currentState.GetBalance(from).Cmp(tx.Cost()) < 0 {
 		return ErrInsufficientFunds
 	}
+	//--------------------------------------task7--------------------------------------
+	//task7: 如果固定gas消耗大于交易设置的gasLimit,返回错误
+	//---------------------------------------------------------------------------------
 	intrGas, err := IntrinsicGas(tx.Data(), tx.To() == nil, pool.homestead)
 	if err != nil {
 		return err
@@ -603,8 +699,16 @@ func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
 // If a newly added transaction is marked as local, its sending account will be
 // whitelisted, preventing any associated transaction from being dropped out of
 // the pool due to pricing constraints.
+//主要功能:向交易池中添加交易																																																																																																			ｉａｎｇｓｓ
+//task1:检查交易否知收到过,重复接收的交易直接丢弃,然后验证交易是否有效，无效直接丢弃
+//task2:如果交易池满了，待插入的交易的价值比交易池中任意一个都低，则丢弃没有价值的交易
+//task3:如果待插入的交易序号在pending列表中已经有一个交易了, 那么待插入的交易的价值大于或等于原有交易的110%, 则替换原有交易
+//task4:如果新交易不是替换一个pending列表中的交易,则直接放入queue队列,如果待插入的交易序号所对应的 位置已经有一个交易了, 那么待插入的交易的价值大于或等于原有交易的110%, 则替换原有交易
 func (pool *TxPool) add(tx *types.Transaction, local bool) (bool, error) {
 	// If the transaction is already known, discard it
+	//--------------------------------------task1--------------------------------------
+	//task1:检查交易否知收到过,重复接收的交易直接丢弃,然后验证交易是否有效，无效直接丢弃
+	//---------------------------------------------------------------------------------
 	hash := tx.Hash()
 	if pool.all.Get(hash) != nil {
 		log.Trace("Discarding already known transaction", "hash", hash)
@@ -616,28 +720,40 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (bool, error) {
 		invalidTxCounter.Inc(1)
 		return false, err
 	}
+	//--------------------------------------task2--------------------------------------
+	//task2:如果交易池满了，待插入的交易的价值比交易池中任意一个都低，则丢弃没有价值的交易
+	//---------------------------------------------------------------------------------
 	// If the transaction pool is full, discard underpriced transactions
+	//pool.config.GlobalSlots 所有可执行交易的总数 默认4096
+	//pool.config.GlobalQeueue 所有可执行交易的总数 默认1024
 	if uint64(pool.all.Count()) >= pool.config.GlobalSlots+pool.config.GlobalQueue {
 		// If the new transaction is underpriced, don't accept it
+		//如果待插入的交易的价值比当前最便宜的交易还要低,直接丢弃
 		if !local && pool.priced.Underpriced(tx, pool.locals) {
 			log.Trace("Discarding underpriced transaction", "hash", hash, "price", tx.GasPrice())
 			underpricedTxCounter.Inc(1)
 			return false, ErrUnderpriced
 		}
 		// New transaction is better than our worse ones, make room for it
+		//如果待插入的交易的价值比当前最便宜的交易还要低同时不在白名单中,直接丢弃,否则腾出空间，返回要丢弃的交易
 		drop := pool.priced.Discard(pool.all.Count()-int(pool.config.GlobalSlots+pool.config.GlobalQueue-1), pool.locals)
 		for _, tx := range drop {
 			log.Trace("Discarding freshly underpriced transaction", "hash", tx.Hash(), "price", tx.GasPrice())
 			underpricedTxCounter.Inc(1)
+			//删除交易
 			pool.removeTx(tx.Hash(), false)
 		}
 	}
 	// If the transaction is replacing an already pending one, do directly
+	//--------------------------------------task3--------------------------------------
+	//task3:如果待插入的交易序号在pending列表中已经有一个交易了, 那么待插入的交易的价值大于或等于原有交易的110%, 则替换原有交易
+	//---------------------------------------------------------------------------------
 	from, _ := types.Sender(pool.signer, tx) // already validated
 	if list := pool.pending[from]; list != nil && list.Overlaps(tx) {
 		// Nonce already pending, check if required price bump is met
 		inserted, old := list.Add(tx, pool.config.PriceBump)
 		if !inserted {
+			//丢弃计数器加１
 			pendingDiscardCounter.Inc(1)
 			return false, ErrReplaceUnderpriced
 		}
@@ -645,6 +761,7 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (bool, error) {
 		if old != nil {
 			pool.all.Remove(old.Hash())
 			pool.priced.Removed()
+			//pending列表替换计数器加１
 			pendingReplaceCounter.Inc(1)
 		}
 		pool.all.Add(tx)
@@ -654,19 +771,25 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (bool, error) {
 		log.Trace("Pooled new executable transaction", "hash", hash, "from", from, "to", tx.To())
 
 		// We've directly injected a replacement transaction, notify subsystems
+		//通知其他对交易池增加新交易感兴趣的子系统
 		go pool.txFeed.Send(NewTxsEvent{types.Transactions{tx}})
 
 		return old != nil, nil
 	}
 	// New transaction isn't replacing a pending one, push into queue
+	//--------------------------------------task4--------------------------------------
+	//task4:如果新交易不是替换一个pending列表中的交易,则直接放入queue队列,如果待插入的交易序号所对应的 位置已经有一个交易了, 那么待插入的交易的价值大于或等于原有交易的110%, 则替换原有交易
+	//---------------------------------------------------------------------------------
 	replace, err := pool.enqueueTx(hash, tx)
 	if err != nil {
 		return false, err
 	}
 	// Mark local addresses and journal local transactions
+	//如果某个新增加的交易被标记为local, 那么它的发送账户会进入白名单,这个账户的关联的交易将不会因为价格的限制或者其他的一些限制被删除.
 	if local {
 		pool.locals.add(from)
 	}
+	//如果交易在白名单中，需要处理本地交易日志
 	pool.journalTx(from, tx)
 
 	log.Trace("Pooled new future transaction", "hash", hash, "from", from, "to", tx.To())
@@ -676,24 +799,38 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (bool, error) {
 // enqueueTx inserts a new transaction into the non-executable transaction queue.
 //
 // Note, this method assumes the pool lock is held!
+//主要功能:将交易放入queue列表中																							ｉａｎｇｓｓ
+//task1:将交易插入queue中,如果待插入的交易序号在queue列表中已经有一个交易了, 那么待插入的交易的价值大于或等于原有交易的110%, 则替换原有交易
+//task2:如果新交易替换了某个交易， 从all列表中删除这个交易
+//task3:更新all列表
 func (pool *TxPool) enqueueTx(hash common.Hash, tx *types.Transaction) (bool, error) {
 	// Try to insert the transaction into the future queue
 	from, _ := types.Sender(pool.signer, tx) // already validated
 	if pool.queue[from] == nil {
 		pool.queue[from] = newTxList(false)
 	}
+
+	//--------------------------------------task1--------------------------------------
+	//task1:将交易插入queue中,如果待插入的交易序号在queue列表中已经有一个交易了, 那么待插入的交易的价值大于或等于原有交易的110%, 则替换原有交易
+	//---------------------------------------------------------------------------------
 	inserted, old := pool.queue[from].Add(tx, pool.config.PriceBump)
 	if !inserted {
 		// An older transaction was better, discard this
 		queuedDiscardCounter.Inc(1)
 		return false, ErrReplaceUnderpriced
 	}
+	//--------------------------------------task2--------------------------------------
+	//task2:如果新交易替换了某个交易， 从all列表中删除这个交易
+	//---------------------------------------------------------------------------------
 	// Discard any previous transaction and mark this
 	if old != nil {
 		pool.all.Remove(old.Hash())
 		pool.priced.Removed()
 		queuedReplaceCounter.Inc(1)
 	}
+	//--------------------------------------task3--------------------------------------
+	//task3:更新all列表
+	//---------------------------------------------------------------------------------
 	if pool.all.Get(hash) == nil {
 		pool.all.Add(tx)
 		pool.priced.Put(tx)
@@ -717,11 +854,19 @@ func (pool *TxPool) journalTx(from common.Address, tx *types.Transaction) {
 // and returns whether it was inserted or an older was better.
 //
 // Note, this method assumes the pool lock is held!
+//主要功能:将交易放入queue列表中																							ｉａｎｇｓｓ
+//task1:将交易插入queue中,如果待插入的交易序号在queue列表中已经有一个交易了, 那么待插入的交易的价值大于或等于原有交易的110%, 则替换原有交易
+//task2:如果新交易替换了某个交易， 从all列表中删除这个交易
+//task3:更新all列表
 func (pool *TxPool) promoteTx(addr common.Address, hash common.Hash, tx *types.Transaction) bool {
 	// Try to insert the transaction into the pending queue
+
 	if pool.pending[addr] == nil {
 		pool.pending[addr] = newTxList(true)
 	}
+	//--------------------------------------task1--------------------------------------
+	//task1:将交易插入queue中,如果待插入的交易序号在queue列表中已经有一个交易了, 那么待插入的交易的价值大于或等于原有交易的110%, 则替换原有交易
+	//---------------------------------------------------------------------------------
 	list := pool.pending[addr]
 
 	inserted, old := list.Add(tx, pool.config.PriceBump)
@@ -733,6 +878,9 @@ func (pool *TxPool) promoteTx(addr common.Address, hash common.Hash, tx *types.T
 		pendingDiscardCounter.Inc(1)
 		return false
 	}
+	//--------------------------------------task2--------------------------------------
+	//task2:如果新交易替换了某个交易， 从all列表中删除这个交易
+	//---------------------------------------------------------------------------------
 	// Otherwise discard any previous transaction and mark this
 	if old != nil {
 		pool.all.Remove(old.Hash())
@@ -740,6 +888,9 @@ func (pool *TxPool) promoteTx(addr common.Address, hash common.Hash, tx *types.T
 
 		pendingReplaceCounter.Inc(1)
 	}
+	//--------------------------------------task3--------------------------------------
+	//task3:如果新交易插入成功,将新交易插入all列表
+	//---------------------------------------------------------------------------------
 	// Failsafe to work around direct pending inserts (tests)
 	if pool.all.Get(hash) == nil {
 		pool.all.Add(tx)
@@ -813,9 +964,11 @@ func (pool *TxPool) addTxsLocked(txs []*types.Transaction, local bool) []error {
 	dirty := make(map[common.Address]struct{})
 	errs := make([]error, len(txs))
 
+	//将交易加入到交易池中
 	for i, tx := range txs {
 		var replace bool
 		if replace, errs[i] = pool.add(tx, local); errs[i] == nil {
+			//没有发生替换
 			if !replace {
 				from, _ := types.Sender(pool.signer, tx) // already validated
 				dirty[from] = struct{}{}
@@ -828,6 +981,7 @@ func (pool *TxPool) addTxsLocked(txs []*types.Transaction, local bool) []error {
 		for addr := range dirty {
 			addrs = append(addrs, addr)
 		}
+		//把已经变得可以执行的交易从queue列表中插入到pending列表中
 		pool.promoteExecutables(addrs)
 	}
 	return errs
@@ -870,19 +1024,23 @@ func (pool *TxPool) removeTx(hash common.Hash, outofbound bool) {
 	addr, _ := types.Sender(pool.signer, tx) // already validated during insertion
 
 	// Remove it from the list of known transactions
+	//从全局交易列表中删除
 	pool.all.Remove(hash)
 	if outofbound {
 		pool.priced.Removed()
 	}
 	// Remove the transaction from the pending lists and reset the account nonce
 	if pending := pool.pending[addr]; pending != nil {
+		//从pending列表中删除,同时返回那些后续交易
 		if removed, invalids := pending.Remove(tx); removed {
 			// If no more pending transactions are left, remove the list
+			//如果pending列表为空，删除pending列表和心跳列表中对应的键值对
 			if pending.Empty() {
 				delete(pool.pending, addr)
 				delete(pool.beats, addr)
 			}
 			// Postpone any invalidated transactions
+			//将所有随后交易放入queue队列中
 			for _, tx := range invalids {
 				pool.enqueueTx(tx.Hash(), tx)
 			}
@@ -905,17 +1063,26 @@ func (pool *TxPool) removeTx(hash common.Hash, outofbound bool) {
 // promoteExecutables moves transactions that have become processable from the
 // future queue to the set of pending transactions. During this process, all
 // invalidated transactions (low nonce, low balance) are deleted.
+//主要功能:把已经变得可以执行的交易从future queue 插入到pending queue,如果传入的参数accounts不为空，则只检查参数中的那些账户,否则检查全部账号																																																																																														ｉａｎｇｓｓ
+//task1: 把账号(某些或全部)里面已经变得可以执行的交易从queue列表 插入到pending列表中,同时处理一些失效的交易
+//task2: 发送交易池更新事件
+//task3: 处理pending列表超过限制的情况
+//task4: 处理queue列表超过限制的情况
 func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 	// Track the promoted transactions to broadcast them at once
 	var promoted []*types.Transaction
 
 	// Gather all the accounts potentially needing updates
+	//如果accounts为空，则收集所有潜在需要更新的账户
 	if accounts == nil {
 		accounts = make([]common.Address, 0, len(pool.queue))
 		for addr := range pool.queue {
 			accounts = append(accounts, addr)
 		}
 	}
+	//--------------------------------------task1--------------------------------------
+	//task1:把账号(某些或全部)里面已经变得可以执行的交易从future queue 插入到pending queue,同时处理一些失效的交易
+	//---------------------------------------------------------------------------------
 	// Iterate over all accounts and promote any executable transactions
 	for _, addr := range accounts {
 		list := pool.queue[addr]
@@ -923,6 +1090,7 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 			continue // Just in case someone calls with a non existing account
 		}
 		// Drop all transactions that are deemed too old (low nonce)
+		//list.Forward删除所有低于账户Nonce值的交易,返回被删除的列表,然后all列表中删除
 		for _, tx := range list.Forward(pool.currentState.GetNonce(addr)) {
 			hash := tx.Hash()
 			log.Trace("Removed old queued transaction", "hash", hash)
@@ -930,6 +1098,7 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 			pool.priced.Removed()
 		}
 		// Drop all transactions that are too costly (low balance or out of gas)
+		//list.Filter过滤那些交易的账户余额不足的交易和gas过大的交易, 然后从all交易池中删除
 		drops, _ := list.Filter(pool.currentState.GetBalance(addr), pool.currentMaxGas)
 		for _, tx := range drops {
 			hash := tx.Hash()
@@ -939,15 +1108,20 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 			queuedNofundsCounter.Inc(1)
 		}
 		// Gather all executable transactions and promote them
+		//list.Ready收集那些可以被加入pending列表的交易，依据是这些交易的是连续递增的，且序号从pendingState中保存的序号开始,然后将这些交易放入pending列表.另外返回的列表在list中已经被删除
 		for _, tx := range list.Ready(pool.pendingState.GetNonce(addr)) {
 			hash := tx.Hash()
+			//将收集到的交易插入到pending列表中
 			if pool.promoteTx(addr, hash, tx) {
 				log.Trace("Promoting queued transaction", "hash", hash)
 				promoted = append(promoted, tx)
 			}
 		}
 		// Drop all transactions over the allowed limit
+		//如果这个账户下的交易数量超过了阀值(默认64),
 		if !pool.locals.contains(addr) {
+			//config.AccountQueue表示queue列表中每个账户最大的交易数
+			//list.Cap返回超过数量限制交易,然后从all列表中删除,另外返回的交易在list中已经被删除
 			for _, tx := range list.Cap(int(pool.config.AccountQueue)) {
 				hash := tx.Hash()
 				pool.all.Remove(hash)
@@ -957,11 +1131,17 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 			}
 		}
 		// Delete the entire queue entry if it became empty.
+		//如果当前账户在queue列表中为空，　则将账户从queue中彻底删除
 		if list.Empty() {
 			delete(pool.queue, addr)
 		}
 	}
 	// Notify subsystem for new promoted transactions.
+
+	//--------------------------------------task2--------------------------------------
+	//task2:发送交易池更新事件
+	//---------------------------------------------------------------------------------
+
 	if len(promoted) > 0 {
 		go pool.txFeed.Send(NewTxsEvent{promoted})
 	}
@@ -970,12 +1150,19 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 	for _, list := range pool.pending {
 		pending += uint64(list.Len())
 	}
+
+	//--------------------------------------task3--------------------------------------
+	//task3:处理pending列表大小超过限制的情况
+	//---------------------------------------------------------------------------------
+	//如果pending列表数量超过系统配置(默认为4096)，则重新均衡数量
 	if pending > pool.config.GlobalSlots {
 		pendingBeforeCap := pending
 		// Assemble a spam order to penalize large transactors first
 		spammers := prque.New()
+		//找出那些交易数量超出范围的账户,记录下账户地址和交易数量
 		for addr, list := range pool.pending {
 			// Only evict transactions from high rollers
+			//每个账户最多只允许有16个交易
 			if !pool.locals.contains(addr) && uint64(list.Len()) > pool.config.AccountSlots {
 				spammers.Push(addr, float32(list.Len()))
 			}
@@ -1036,6 +1223,10 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 		}
 		pendingRateLimitCounter.Inc(int64(pendingBeforeCap - pending))
 	}
+
+	//--------------------------------------task4--------------------------------------
+	//task4:queue列表大小超过限制的情况
+	//---------------------------------------------------------------------------------
 	// If we've queued more transactions than the hard limit, drop oldest ones
 	queued := uint64(0)
 	for _, list := range pool.queue {
@@ -1081,11 +1272,20 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 // demoteUnexecutables removes invalid and processed transactions from the pools
 // executable/pending queue and any subsequent transactions that become unexecutable
 // are moved back into the future queue.
+
+//主要功能:从pending中移除无效的交易，同时将后续的交易都移动到queue
+//task1:丢弃nonce值过低的交易
+//task2:删除账户余额已经不足以支付交易的交易
+//task3:将暂时无效的交易移到queue中
+//task4:如果前面有间隙，将后面的交易移到queue中
 func (pool *TxPool) demoteUnexecutables() {
 	// Iterate over all accounts and demote any non-executable transactions
 	for addr, list := range pool.pending {
 		nonce := pool.currentState.GetNonce(addr)
 
+	    //--------------------------------------task1--------------------------------------
+	    //task1:丢弃nonce值过低的交易
+	    // ---------------------------------------------------------------------------------
 		// Drop all transactions that are deemed too old (low nonce)
 		for _, tx := range list.Forward(nonce) {
 			hash := tx.Hash()
@@ -1094,7 +1294,11 @@ func (pool *TxPool) demoteUnexecutables() {
 			pool.priced.Removed()
 		}
 		// Drop all transactions that are too costly (low balance or out of gas), and queue any invalids back for later
+		//返回账户余额已经不足以支付交易的费用和一些暂时无效的交易
 		drops, invalids := list.Filter(pool.currentState.GetBalance(addr), pool.currentMaxGas)
+	    //--------------------------------------task2--------------------------------------
+	    //task2:删除账户余额已经不足以支付交易的交易
+	    // ---------------------------------------------------------------------------------
 		for _, tx := range drops {
 			hash := tx.Hash()
 			log.Trace("Removed unpayable pending transaction", "hash", hash)
@@ -1102,12 +1306,18 @@ func (pool *TxPool) demoteUnexecutables() {
 			pool.priced.Removed()
 			pendingNofundsCounter.Inc(1)
 		}
+	    //--------------------------------------task3--------------------------------------
+	    //task3:将暂时无效的交易移到queue中
+	    // ---------------------------------------------------------------------------------
 		for _, tx := range invalids {
 			hash := tx.Hash()
 			log.Trace("Demoting pending transaction", "hash", hash)
 			pool.enqueueTx(hash, tx)
 		}
 		// If there's a gap in front, warn (should never happen) and postpone all transactions
+	    //--------------------------------------task4--------------------------------------
+	    //task4:如果前面有间隙，将后面的交易移到queue中
+	    // ---------------------------------------------------------------------------------
 		if list.Len() > 0 && list.txs.Get(nonce) == nil {
 			for _, tx := range list.Cap(0) {
 				hash := tx.Hash()
@@ -1116,6 +1326,7 @@ func (pool *TxPool) demoteUnexecutables() {
 			}
 		}
 		// Delete the entire queue entry if it became empty.
+		//删除没有交易的账户
 		if list.Empty() {
 			delete(pool.pending, addr)
 			delete(pool.beats, addr)
