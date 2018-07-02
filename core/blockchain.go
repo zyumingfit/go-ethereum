@@ -134,6 +134,10 @@ type BlockChain struct {
 // NewBlockChain returns a fully initialised block chain using information
 // available in the database. It initialises the default Ethereum Validator and
 // Processor.
+// 主要功能：根据外部参数或默认参数实例化BlockChain类，并加载规范头区块到BlockChain对象中，具体任务如下:
+//task1:根据外部参数或默认参数实例化BlockChain类，从数据库中加载规范链状态到BlockChain中
+//task2:遍历badHash列表，如果发现规范链中存在badHash列表中的错误区块，则将规范链回滚到的错误区块的父区块
+//task3:开启处理未来区块的Go程
 func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *params.ChainConfig, engine consensus.Engine, vmConfig vm.Config) (*BlockChain, error) {
 	if cacheConfig == nil {
 		cacheConfig = &CacheConfig{
@@ -147,6 +151,9 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 	futureBlocks, _ := lru.New(maxFutureBlocks)
 	badBlocks, _ := lru.New(badBlockLimit)
 
+	//--------------------------------------task1--------------------------------------
+	//task1:根据外部参数或默认参数实例化BlockChain类，从数据库中加载规范链状态到BlockChain中
+	//---------------------------------------------------------------------------------
 	bc := &BlockChain{
 		chainConfig:  chainConfig,
 		cacheConfig:  cacheConfig,
@@ -174,10 +181,14 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 	if bc.genesisBlock == nil {
 		return nil, ErrNoGenesis
 	}
+	//加载规范连链的头区块到Blochain中
 	if err := bc.loadLastState(); err != nil {
 		return nil, err
 	}
 	// Check the current state of the block hashes and make sure that we do not have any of the bad blocks in our chain
+	//--------------------------------------task2--------------------------------------
+	//task2:遍历badHash列表，如果发现规范链中存在badHash列表中的错误区块，则将规范链回滚到的错误区块的父区块
+	//---------------------------------------------------------------------------------
 	for hash := range BadHashes {
 		if header := bc.GetHeaderByHash(hash); header != nil {
 			// get the canonical block corresponding to the offending header's number
@@ -191,6 +202,9 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 		}
 	}
 	// Take ownership of this particular state
+	//--------------------------------------task2--------------------------------------
+	//task2:遍历badHash列表，如果发现规范链中存在badHash列表中的错误区块，则将规范链回滚到的错误区块的父区块
+	//---------------------------------------------------------------------------------
 	go bc.update()
 	return bc, nil
 }
@@ -201,22 +215,34 @@ func (bc *BlockChain) getProcInterrupt() bool {
 
 // loadLastState loads the last known chain state from the database. This method
 // assumes that the chain manager mutex is held.
+//主要功能: 加载规范连链的头区块到Blochain中,具体功能如下：
+//task1:从数据库中读取规范链头区块
+//task2:设置BlockChain.currentBlock为规范连头区块
+//task3:如果BlockChain.HeadChain.CurrentHeader数据库里面存在则设置成数据已经保存的， 如果没有就设置成规范连的头区块
 func (bc *BlockChain) loadLastState() error {
 	// Restore the last known head block
+	//-----------------------------task1-------------------------
+	//task1:从数据库中读取规范链头区块
+	//-----------------------------------------------------------
+	//以"LastBlock"为key，读取规范连的头区块的hash值
 	head := rawdb.ReadHeadBlockHash(bc.db)
 	if head == (common.Hash{}) {
 		// Corrupt or empty database, init from scratch
 		log.Warn("Empty database, resetting chain")
+		//如果读取上来的头区块hash值是空，就重置整个规范连
 		return bc.Reset()
 	}
 	// Make sure the entire head block is available
+	//确保当前头区块数据库里面可以查找到，如果找不到就重置整个规范连
 	currentBlock := bc.GetBlockByHash(head)
 	if currentBlock == nil {
 		// Corrupt or empty database, init from scratch
+		//确保当前头区块数据库里面可以查找到，如果找不到就重置整个规范连
 		log.Warn("Head block missing, resetting chain", "hash", head)
 		return bc.Reset()
 	}
 	// Make sure the state associated with the block is available
+	//确保与区块相关的状态是可获取的
 	if _, err := state.New(currentBlock.Root(), bc.stateCache); err != nil {
 		// Dangling block without a state associated, init from scratch
 		log.Warn("Head state missing, repairing chain", "number", currentBlock.Number(), "hash", currentBlock.Hash())
@@ -224,10 +250,16 @@ func (bc *BlockChain) loadLastState() error {
 			return err
 		}
 	}
+	//-----------------------------task2-------------------------
+	//task2:遍历badHash列表，如果发现规范链中存在badHash列表中的错误区块，则将规范链回滚到的错误区块的父区块
+	//-----------------------------------------------------------
 	// Everything seems to be fine, set as the head block
 	bc.currentBlock.Store(currentBlock)
 
 	// Restore the last known head header
+	//----------------------------task3--------------------------
+	//task3:如果BlockChain.HeadChain.CurrentHeader数据库里面存在则设置成数据已经保存的， 如果没有就设置成规范连的头区块
+	//-----------------------------------------------------------
 	currentHeader := currentBlock.Header()
 	if head := rawdb.ReadHeadHeaderHash(bc.db); head != (common.Hash{}) {
 		if header := bc.GetHeaderByHash(head); header != nil {
@@ -395,6 +427,9 @@ func (bc *BlockChain) Reset() error {
 // specified genesis state.
 func (bc *BlockChain) ResetWithGenesisBlock(genesis *types.Block) error {
 	// Dump the entire block chain and purge the caches
+	//--------------------------------task 1-------------------------------
+	// 把整个规范链链清除
+	//---------------------------------------------------------------------
 	if err := bc.SetHead(0); err != nil {
 		return err
 	}
@@ -402,11 +437,19 @@ func (bc *BlockChain) ResetWithGenesisBlock(genesis *types.Block) error {
 	defer bc.mu.Unlock()
 
 	// Prepare the genesis block and reinitialise the chain
+	//更新BlockChain.HeaderChain中的规范链条总难度
+	//更新数据库中规范连的总难度  使用（'h' + num + hash + 't'）作为KEY
 	if err := bc.hc.WriteTd(genesis.Hash(), genesis.NumberU64(), genesis.Difficulty()); err != nil {
 		log.Crit("Failed to write genesis block TD", "err", err)
 	}
+	//--------------------------------task 2-------------------------------
+	//将创世区块的header 和Body写入数据库
+	//---------------------------------------------------------------------
 	rawdb.WriteBlock(bc.db, genesis)
 
+	//--------------------------------task 3-------------------------------
+	//将区块写入数据库， 同时纠正HeadChaind的错误延伸
+	//---------------------------------------------------------------------
 	bc.genesisBlock = genesis
 	bc.insert(bc.genesisBlock)
 	bc.currentBlock.Store(bc.genesisBlock)
@@ -470,18 +513,38 @@ func (bc *BlockChain) ExportN(w io.Writer, first uint64, last uint64) error {
 // or if they are on a different side chain.
 //
 // Note, this function assumes that the `mu` mutex is held!
+//主要功能:将待插入规范链的区块的区块号在规范连上的区块hash值，更新成待插入规范连的区块的hash，同时纠正Headerchain的错误延伸
+//task1:读出待插入block的区块号对应在规范连上的区块hash值， 与block的hash值对对比， 看是否相等,相当于判断HeadChain延伸是否正确
+//task2:更新规范连上block.number的hash值为 block.hash
+//task3:正式将区块写入规范连
+//task4:将headChain的头设置成待插入规范连的区块头， BLockChain和HeadChain再次齐头并进， 相当于HeadChain的错误延伸被纠正
 func (bc *BlockChain) insert(block *types.Block) {
 	// If the block is on a side chain or an unknown one, force other heads onto it too
+	//------------------------------------------task1-------------------------------------
+	//读出待插入block的区块号对应在规范连上的区块hash值， 与block的hash值对对比， 看是否相等,相当于判断HeadChain延伸是否正确
+	//如果延伸不正确不正确，我们后面要纠正HeadChain的错误延伸
+	//--------------------------------------------------------------------------------------
 	updateHeads := rawdb.ReadCanonicalHash(bc.db, block.NumberU64()) != block.Hash()
 
 	// Add the block to the canonical chain number scheme and mark as the head
+	//------------------------------------------task2--------------------------------------
+	//task2:更新规范连上block.number的hash值为 block.hash
+	//--------------------------------------------------------------------------------------
 	rawdb.WriteCanonicalHash(bc.db, block.Hash(), block.NumberU64())
+	//-------------------------------------------task3--------------------------------------
+	//task3:正式将区块写入规范连
+	//--------------------------------------------------------------------------------------
+	//更新数据库中的“LastBlock”
 	rawdb.WriteHeadBlockHash(bc.db, block.Hash())
 
+	//将BlockChain中的currentBlock替换成block
 	bc.currentBlock.Store(block)
 
 	// If the block is better than our head or is on a different chain, force update heads
 	if updateHeads {
+		//--------------------------------------task4------------------------------------------
+		//task4:将headChain的头设置成待插入规范连的区块头， BLockChain和HeadChain再次齐头并进， 相当于HeadChain的错误延伸被纠正
+		//--------------------------------------------------------------------------------------
 		bc.hc.SetCurrentHeader(block.Header())
 		rawdb.WriteHeadFastBlockHash(bc.db, block.Hash())
 
@@ -588,10 +651,16 @@ func (bc *BlockChain) GetBlockByHash(hash common.Hash) *types.Block {
 // GetBlockByNumber retrieves a block from the database by number, caching it
 // (associated with its hash) if found.
 func (bc *BlockChain) GetBlockByNumber(number uint64) *types.Block {
+	//--------------------------------task 1-------------------------------
+	//使用传入的区块号获取规范链上的区块hash值
+	//---------------------------------------------------------------------
 	hash := rawdb.ReadCanonicalHash(bc.db, number)
 	if hash == (common.Hash{}) {
 		return nil
 	}
+	//--------------------------------task 2-------------------------------
+	//使用HASH值和区块号获取整个区块的rpl编码
+	//---------------------------------------------------------------------
 	return bc.GetBlock(hash, number)
 }
 
@@ -873,12 +942,19 @@ func (bc *BlockChain) WriteBlockWithoutState(block *types.Block, td *big.Int) (e
 	return nil
 }
 
+//主要功能：将一个区块写入数据库和规范链
+//task1：将区块总难度插入数据库
+//task2：将区块header和body写入数据库
+//task3：新的状态树写入数据库
+//task4：将区块的收据列表写入数据库
+//task5：将区块写入规范连(BlockChain.insert)，同时处理分叉(BlockChain.reorg)
 // WriteBlockWithState writes the block and all associated state to the database.
 func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.Receipt, state *state.StateDB) (status WriteStatus, err error) {
 	bc.wg.Add(1)
 	defer bc.wg.Done()
 
 	// Calculate the total difficulty of the block
+	//获取父区块的总难度
 	ptd := bc.GetTd(block.ParentHash(), block.NumberU64()-1)
 	if ptd == nil {
 		return NonStatTy, consensus.ErrUnknownAncestor
@@ -887,18 +963,32 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
+	//获取当前规范链头区块的总难度
 	currentBlock := bc.CurrentBlock()
 	localTd := bc.GetTd(currentBlock.Hash(), currentBlock.NumberU64())
+	//计算出待插入区块的总难度
 	externTd := new(big.Int).Add(block.Difficulty(), ptd)
 
 	// Irrelevant of the canonical status, write the block itself to the database
+	//--------------------------------task 1-------------------------------------
+	//task1:将当前区块的总难度写入数据库
+	//---------------------------------------------------------------------------
+	//使用 "h" + num + has 作为key
 	if err := bc.hc.WriteTd(block.Hash(), block.NumberU64(), externTd); err != nil {
 		return NonStatTy, err
 	}
 	// Write other block data using a batch.
 	batch := bc.db.NewBatch()
+	//--------------------------------task 2-------------------------------------
+	//task2:使用数据库的Write接口将block(header, body)写入到数据库中
+	//---------------------------------------------------------------------------
+	//写header使用"h" + num + has 作为key
+	//写body使用"b" + num + has 作为key
 	rawdb.WriteBlock(batch, block)
 
+	//--------------------------------task 3-------------------------------------
+	//task3:将新的状态数树内容写入到数据库
+	//---------------------------------------------------------------------------
 	root, err := state.Commit(bc.chainConfig.IsEIP158(block.Number()))
 	if err != nil {
 		return NonStatTy, err
@@ -951,8 +1041,15 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 			}
 		}
 	}
+	//--------------------------------task 4-------------------------------------
+	//task4:收据内容写入到数据库
+	//---------------------------------------------------------------------------
+	//使用 "r" + num + hash 作为key, receipts列表的RLP编码值作为value
 	rawdb.WriteReceipts(batch, block.Hash(), block.NumberU64(), receipts)
 
+	//--------------------------------task5--------------------------------------
+	//task:5将待插入的区块写入规范链
+	//---------------------------------------------------------------------------
 	// If the total difficulty is higher than our known, add it to the canonical chain
 	// Second clause in the if statement reduces the vulnerability to selfish mining.
 	// Please refer to http://www.cs.cornell.edu/~ie53/publications/btcProcFC.pdf
@@ -962,6 +1059,12 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 		// Split same-difficulty blocks by number, then at random
 		reorg = block.NumberU64() < currentBlock.NumberU64() || (block.NumberU64() == currentBlock.NumberU64() && mrand.Float64() < 0.5)
 	}
+	//如果待插入区块的总难度等于本地规范链的总难度,但是区块号小于当前规范链的头区块号， 待插入的区块所在的分叉更有效,需要处理分叉，并更新规范连
+	//如果待插入区块的总难度等于本地规范链的总难度,但是区块号等于当前规范链的头区块号，待插入的区块所在的分叉更有效,需要处理分叉，并更新规范连
+
+
+	//如果待插入区块的总难度大于本地规范链的总难度,那Block必定要插入规范连
+	//如果待插入区块的总难度小于本地规范链的总难度, 待插入区块在另一个分叉上，不需要插入
 	if reorg {
 		// Reorganise the chain if the parent is not the head block
 		if block.ParentHash() != currentBlock.Hash() {
@@ -977,14 +1080,21 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 	} else {
 		status = SideStatTy
 	}
+	//将数据缓冲写入数据库
 	if err := batch.Write(); err != nil {
 		return NonStatTy, err
 	}
 
 	// Set new head.
 	if status == CanonStatTy {
+		//如果这个区块可以插入本地规范连， 就将它插入本地规范链
+		//task1: 更新规范链上区块号对应的Hash值
+		//task2: 更新数据库中的"LastBlock"的值
+		//task3: 更新BlockChain的CurrentBlock
+		//task4: 纠正BlockChain的错误延伸
 		bc.insert(block)
 	}
+	//如果futureBlock中存在刚插入的区块， 就将它删除
 	bc.futureBlocks.Remove(block.Hash())
 	return status, nil
 }
@@ -1004,12 +1114,19 @@ func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 // insertChain will execute the actual chain insertion and event aggregation. The
 // only reason this method exists as a separate one is to make locking cleaner
 // with deferred statements.
+//主要功能：调用BlockChain.insertChain将一组区块挨个尝试插入数据库和规范链上， 具体任务如下
+//task1:验证第n个区块的header
+//task2:验证第n个区块的body
+//task3:处理验证header和body所产生的错误
+//task4:如果上面的验证通过，对待插入区块的交易状态进行验证，否则退出
+//task5:如果验证成功，调用WriteBlockWithState将第n个区块写入数据库，然后插入规范连，同时处理分叉问题
 func (bc *BlockChain) insertChain(chain types.Blocks) (int, []interface{}, []*types.Log, error) {
 	// Sanity check that we have something meaningful to import
 	if len(chain) == 0 {
 		return 0, nil, nil, nil
 	}
 	// Do a sanity check that the provided chain is actually ordered and linked
+	//检查待插入的区块切片是否是父子相接并且区块号递增，如果不满足就退出
 	for i := 1; i < len(chain); i++ {
 		if chain[i].NumberU64() != chain[i-1].NumberU64()+1 || chain[i].ParentHash() != chain[i-1].Hash() {
 			// Chain broke ancestry, log a messge (programming error) and skip insertion
@@ -1030,12 +1147,17 @@ func (bc *BlockChain) insertChain(chain types.Blocks) (int, []interface{}, []*ty
 	// A queued approach to delivering events. This is generally
 	// faster than direct delivery and requires much less mutex
 	// acquiring.
+	//用于信号传递
 	var (
 		stats         = insertStats{startTime: mclock.Now()}
 		events        = make([]interface{}, 0, len(chain))
 		lastCanon     *types.Block
 		coalescedLogs []*types.Log
 	)
+	//----------------------------------------task 1---------------------------------------------------
+	//task1:验证第n个区块的header
+	//-------------------------------------------------------------------------------------------------
+	//通过一致性模块来并行检查区块头的正确性,正確性包括 gasused是否小于gaslimit,区块的摘要是否正确等等。
 	// Start the parallel header verifier
 	headers := make([]*types.Header, len(chain))
 	seals := make([]bool, len(chain))
@@ -1044,6 +1166,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks) (int, []interface{}, []*ty
 		headers[i] = block.Header()
 		seals[i] = true
 	}
+
 	abort, results := bc.engine.VerifyHeaders(bc, headers, seals)
 	defer close(abort)
 
@@ -1052,12 +1175,19 @@ func (bc *BlockChain) insertChain(chain types.Blocks) (int, []interface{}, []*ty
 
 	// Iterate over the blocks and insert when the verifier permits
 	for i, block := range chain {
+			//BlockChain.procInterrupt在BlockChain.Stop中被调用
+		//----------------------------------------task 1---------------------------------------------------
+		//task1:验证第n个区块的header
+		//-------------------------------------------------------------------------------------------------
+		//通过一致性模块来并行检查区块头的正确性,正確性包括 gasused是否小于gaslimit,区块的摘要是否正确等等。
+		//如果BlockChain.Stop被调用，这里需要立刻停止处理区块
 		// If the chain is terminating, stop processing blocks
 		if atomic.LoadInt32(&bc.procInterrupt) == 1 {
 			log.Debug("Premature abort during blocks processing")
 			break
 		}
 		// If the header is a banned one, straight out abort
+		//如果这个区块禁止的， 需要立即停止
 		if BadHashes[block.Hash()] {
 			bc.reportBlock(block, nil, ErrBlacklistedHash)
 			return i, events, coalescedLogs, ErrBlacklistedHash
@@ -1065,14 +1195,28 @@ func (bc *BlockChain) insertChain(chain types.Blocks) (int, []interface{}, []*ty
 		// Wait for the block's verification to complete
 		bstart := time.Now()
 
+
 		err := <-results
 		if err == nil {
+			//----------------------------------------task 2---------------------------------------------------
+			//task2:验证第n个区块的body
+			//-------------------------------------------------------------------------------------------------
+			//验证区块的body是否正确
 			err = bc.Validator().ValidateBody(block)
 		}
+		//----------------------------------------task 3---------------------------------------------------
+		//task3:处理验证header和body所产生的错误
+		//-------------------------------------------------------------------------------------------------
+		//处理验证header和body产生的几种错误如下：
+		//  1.待插入的区块已经是数据库中存在的
+		//	2.待插入的是未来区块
+		//	3.在数据库中找不到待插入区块的父区块但是未来区块列表中能够找到它的父区块
+		//	4.待插入区块是数据库中的一个精简分支
 		switch {
 		case err == ErrKnownBlock:
 			// Block and state both already known. However if the current block is below
 			// this number we did a rollback and we should reimport it nonetheless.
+			//待插入的区块已经在数据库中， 并且规范链头区块的区块号大于待插入的区块的区块号， 我们直接忽略
 			if bc.CurrentBlock().NumberU64() >= block.NumberU64() {
 				stats.ignored++
 				continue
@@ -1081,6 +1225,8 @@ func (bc *BlockChain) insertChain(chain types.Blocks) (int, []interface{}, []*ty
 		case err == consensus.ErrFutureBlock:
 			// Allow up to MaxFuture second in the future blocks. If this limit is exceeded
 			// the chain is discarded and processed at a later time if given.
+			//待插入区块的时间戳大于当前时间15秒,同认为是未来区块
+			//待插入区块的时间戳大于当前时间30秒， 直接丢弃这个区块
 			max := big.NewInt(time.Now().Unix() + maxTimeFutureBlocks)
 			if block.Time().Cmp(max) > 0 {
 				return i, events, coalescedLogs, fmt.Errorf("future block: %v > %v", block.Time(), max)
@@ -1090,6 +1236,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks) (int, []interface{}, []*ty
 			continue
 
 		case err == consensus.ErrUnknownAncestor && bc.futureBlocks.Contains(block.ParentHash()):
+			//数据库里面找不到这个区块的父亲区块， 并且未来待处理区块缓冲里面有它的父区块， 就将它放入到未来带处理缓冲里面
 			bc.futureBlocks.Add(block.Hash(), block)
 			stats.queued++
 			continue
@@ -1097,6 +1244,8 @@ func (bc *BlockChain) insertChain(chain types.Blocks) (int, []interface{}, []*ty
 		case err == consensus.ErrPrunedAncestor:
 			// Block competing with the canonical chain, store in the db, but don't process
 			// until the competitor TD goes above the canonical TD
+			//这个区块的父区块是数据数据库中的一条精简分支区块
+			//如果这个区块的总难度值小于等于规范连总难度值,只将它写入数据库
 			currentBlock := bc.CurrentBlock()
 			localTd := bc.GetTd(currentBlock.Hash(), currentBlock.NumberU64())
 			externTd := new(big.Int).Add(bc.GetTd(block.ParentHash(), block.NumberU64()-1), block.Difficulty())
@@ -1107,6 +1256,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks) (int, []interface{}, []*ty
 				continue
 			}
 			// Competitor chain beat canonical, gather all blocks from the common ancestor
+			//如果这个区块的总难度值大于或等于规范连总难度值，将这个精简链插入规范链
 			var winner []*types.Block
 
 			parent := bc.GetBlock(block.ParentHash(), block.NumberU64()-1)
@@ -1133,30 +1283,46 @@ func (bc *BlockChain) insertChain(chain types.Blocks) (int, []interface{}, []*ty
 		}
 		// Create a new statedb using the parent block and report an
 		// error if it fails.
+
+		//----------------------------------------task 4---------------------------------------------------
+		//task4:如果上面的验证通过，对待插入区块的交易状态进行验证，否则退出
+		//-------------------------------------------------------------------------------------------------
+		//对待插入区块的交易状态进行验证
 		var parent *types.Block
 		if i == 0 {
 			parent = bc.GetBlock(block.ParentHash(), block.NumberU64()-1)
 		} else {
 			parent = chain[i-1]
 		}
+		//将这个block的父亲的状态树从数据读取出来实例化成StateDB
 		state, err := state.New(parent.Root(), bc.stateCache)
 		if err != nil {
 			return i, events, coalescedLogs, err
 		}
 		// Process block using the parent state as reference point.
+		//使用当前block中的交易执行生成新的状态(old state-> new state)， 获取执行结果（收据列表和日志列表),如果执行成功
+		//state将会得到一个新的状态
 		receipts, logs, usedGas, err := bc.processor.Process(block, state, bc.vmConfig)
 		if err != nil {
 			bc.reportBlock(block, receipts, err)
 			return i, events, coalescedLogs, err
 		}
 		// Validate the state using the default validator
+		//用上面执行交易后得到的全新状态对比block中状态,对比如下结果:
+		//	block.gasUed == usedGas
+		//	block.Header().Bloom == types.CreateBloom(receipts)
+		//  block.Header().ReceiptHash == types.DeriveSha(receipts)
+		//  block.Root == state.trie.Hash()
 		err = bc.Validator().ValidateState(block, parent, state, receipts, usedGas)
 		if err != nil {
 			bc.reportBlock(block, receipts, err)
 			return i, events, coalescedLogs, err
 		}
 		proctime := time.Since(bstart)
-
+		//----------------------------------------task 5---------------------------------------------------
+		//task5:如果验证成功，调用WriteBlockWithState将第n个区块插入写入数据库，然后写入规范链，同时处理分叉问题
+		//-------------------------------------------------------------------------------------------------
+		//验证成功了， 可以将区块、收据、状态写入数据库和规范连
 		// Write the block to the chain and get the status.
 		status, err := bc.WriteBlockWithState(block, receipts, state)
 		if err != nil {
@@ -1248,6 +1414,13 @@ func countTransactions(chain []*types.Block) (c int) {
 // reorgs takes two blocks, an old chain and a new chain and will reconstruct the blocks and inserts them
 // to be part of the new canonical chain and accumulates potential missing transactions and post an
 // event about them
+//主要功能： 将新链(原来是分叉)切换成规范连，同时找出老规范链上那些不存在于新规范链上的交易，将他们的查询入口信息从数据库中删除, 另外向外部发送一些事件
+//task1:找到新链和原来规范链的共同祖先
+//task2:将新链插入到规范链中, 同时收集插入到规范连的所有交易
+//task3:找出待删除列表中的那些不在待添加的交易列表的交易,并从数据库中删除那些交易查询入口
+//task4:向外发送区块被重新组织的时间，向外发送日志删除的事件
+
+//能够进来的前提条件是newBlock总难度值大于oldBlock, 且newBlock的父亲不是oldBlock
 func (bc *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 	var (
 		newChain    types.Blocks
@@ -1275,8 +1448,12 @@ func (bc *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 		}
 	)
 
+	//------------------------------task1--------------------------
+	//task1:找到新链和原来规范链的共同祖先
+	//-------------------------------------------------------------
 	// first reduce whoever is higher bound
 	if oldBlock.NumberU64() > newBlock.NumberU64() {
+		//如果老分支比新分支高， 就减少老分支
 		// reduce old chain
 		for ; oldBlock != nil && oldBlock.NumberU64() != newBlock.NumberU64(); oldBlock = bc.GetBlock(oldBlock.ParentHash(), oldBlock.NumberU64()-1) {
 			oldChain = append(oldChain, oldBlock)
@@ -1285,6 +1462,7 @@ func (bc *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 			collectLogs(oldBlock.Hash())
 		}
 	} else {
+		//如果新分支比老分支高， 就减少新分支
 		// reduce new chain and append new chain blocks for inserting later on
 		for ; newBlock != nil && newBlock.NumberU64() != oldBlock.NumberU64(); newBlock = bc.GetBlock(newBlock.ParentHash(), newBlock.NumberU64()-1) {
 			newChain = append(newChain, newBlock)
@@ -1297,6 +1475,7 @@ func (bc *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 		return fmt.Errorf("Invalid new chain")
 	}
 
+	//找到共同祖先
 	for {
 		if oldBlock.Hash() == newBlock.Hash() {
 			commonBlock = oldBlock
@@ -1327,22 +1506,35 @@ func (bc *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 	} else {
 		log.Error("Impossible reorg, please file an issue", "oldnum", oldBlock.Number(), "oldhash", oldBlock.Hash(), "newnum", newBlock.Number(), "newhash", newBlock.Hash())
 	}
+
+	//---------------------------------task2-------------------------
+	//task2:将新链插入到规范链中, 同时收集插入到规范连的所有交易
+	//---------------------------------------------------------------
 	// Insert the new chain, taking care of the proper incremental order
+	//将新链插入到规范链中
 	var addedTxs types.Transactions
 	for i := len(newChain) - 1; i >= 0; i-- {
 		// insert the block in the canonical way, re-writing history
 		bc.insert(newChain[i])
 		// write lookup entries for hash based transaction/receipt searches
+		//把所有新分支的区块交易查询入口插入到数据库中
 		rawdb.WriteTxLookupEntries(bc.db, newChain[i])
 		addedTxs = append(addedTxs, newChain[i].Transactions()...)
 	}
 	// calculate the difference between deleted and added transactions
+	//--------------------------------task3-------------------------------
+	//task3:找出待删除列表中的那些不在待添加的交易列表的交易,并从数据库中删除那些交易查询入口
+	//--------------------------------------------------------------------
 	diff := types.TxDifference(deletedTxs, addedTxs)
 	// When transactions get deleted from the database that means the
 	// receipts that were created in the fork must also be deleted
+
 	for _, tx := range diff {
 		rawdb.DeleteTxLookupEntry(bc.db, tx.Hash())
 	}
+	//---------------------------------task 4-----------------------------
+	//task4:向外发送区块被重新组织的事件，向外发送日志删除的事件
+	//--------------------------------------------------------------------
 	if len(deletedLogs) > 0 {
 		go bc.rmLogsFeed.Send(RemovedLogsEvent{deletedLogs})
 	}
