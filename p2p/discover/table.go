@@ -112,12 +112,20 @@ type bucket struct {
 	ips          netutil.DistinctNetSet
 }
 
+//主要功能:初始化K桶,启动数据库节点刷新工程,启动事件监听go程
+//task1:根据外部或者默认参数初始化Table类
+//task2:加载种子节点
+//task3:启动数据库刷新go程
+//task4:启动事件监听go程
 func newTable(t transport, ourID NodeID, ourAddr *net.UDPAddr, nodeDBPath string, bootnodes []*Node) (*Table, error) {
 	// If no node database was given, use an in-memory one
 	db, err := newNodeDB(nodeDBPath, Version, ourID)
 	if err != nil {
 		return nil, err
 	}
+	//--------------------------------------task1--------------------------------------
+	//task1:根据外部或者默认参数初始化Table类
+	//---------------------------------------------------------------------------------
 	tab := &Table{
 		net:        t,
 		db:         db,
@@ -131,6 +139,9 @@ func newTable(t transport, ourID NodeID, ourAddr *net.UDPAddr, nodeDBPath string
 		rand:       mrand.New(mrand.NewSource(0)),
 		ips:        netutil.DistinctNetSet{Subnet: tableSubnet, Limit: tableIPLimit},
 	}
+	//--------------------------------------task2--------------------------------------
+	//task2:加载种子节点
+	//---------------------------------------------------------------------------------
 	if err := tab.setFallbackNodes(bootnodes); err != nil {
 		return nil, err
 	}
@@ -147,11 +158,17 @@ func newTable(t transport, ourID NodeID, ourAddr *net.UDPAddr, nodeDBPath string
 	// Start the background expiration goroutine after loading seeds so that the search for
 	// seed nodes also considers older nodes that would otherwise be removed by the
 	// expiration.
+	//--------------------------------------task3--------------------------------------
+	//task3:启动数据库刷新go程
+	//---------------------------------------------------------------------------------
 	tab.db.ensureExpirer()
+
+	//--------------------------------------task4--------------------------------------
+	//task4:启动事件监听go程
+	//---------------------------------------------------------------------------------
 	go tab.loop()
 	return tab, nil
 }
-
 func (tab *Table) seedRand() {
 	var b [8]byte
 	crand.Read(b[:])
@@ -279,6 +296,9 @@ func (tab *Table) Lookup(targetID NodeID) []*Node {
 	return tab.lookup(targetID, true)
 }
 
+//主要功能:节点发现的主要流程
+//task1:从k桶中查找16个离tagertID最近的节点
+//task2:节点发现主循环(使用上一步中查找到的节点进行挨个询问)
 func (tab *Table) lookup(targetID NodeID, refreshIfEmpty bool) []*Node {
 	var (
 		target         = crypto.Keccak256Hash(targetID[:])
@@ -290,13 +310,18 @@ func (tab *Table) lookup(targetID NodeID, refreshIfEmpty bool) []*Node {
 	)
 	// don't query further if we hit ourself.
 	// unlikely to happen often in practice.
+	//不需要询问自己
 	asked[tab.self.ID] = true
-
+	//--------------------------------------task1--------------------------------------
+	//task1:从ｋ桶中查找１６个离targetId最近的节点
+	//---------------------------------------------------------------------------------
 	for {
 		tab.mutex.Lock()
 		// generate initial result set
+		//从K桶中里最多取离目标最近的16个除初始节点
 		result = tab.closest(target, bucketSize)
 		tab.mutex.Unlock()
+		//如果从k桶中获取的节点数量大于0，或者上一次循环没有获取到初始节点,直接退出循环, 结束本次lookup
 		if len(result.entries) > 0 || !refreshIfEmpty {
 			break
 		}
@@ -304,15 +329,19 @@ func (tab *Table) lookup(targetID NodeID, refreshIfEmpty bool) []*Node {
 		// We actually wait for the refresh to complete here. The very
 		// first query will hit this case and run the bootstrapping
 		// logic.
+		//如果一个都没找到，发送刷新事件,从数据库中重新加载种子节点
 		<-tab.refresh()
 		refreshIfEmpty = false
 	}
-
+	//--------------------------------------task2--------------------------------------
+	//task2:节点发现主循环
+	//---------------------------------------------------------------------------------
 	for {
 		// ask the alpha closest nodes that we haven't asked yet
+		//并发的查询，同时最多3个goroutine并发请求(通过pendingQueries参数进行控制)
 		for i := 0; i < len(result.entries) && pendingQueries < alpha; i++ {
 			n := result.entries[i]
-			if !asked[n.ID] {
+			if !asked[n.ID] {//如果没有查询过，才能查询
 				asked[n.ID] = true
 				pendingQueries++
 				go func() {
@@ -324,26 +353,33 @@ func (tab *Table) lookup(targetID NodeID, refreshIfEmpty bool) []*Node {
 						tab.db.updateFindFails(n.ID, fails)
 						log.Trace("Bumping findnode failure counter", "id", n.ID, "failcount", fails)
 
+						//如果一个节点查询失败次数大于等于5次，从k桶中删除
 						if fails >= maxFindnodeFailures {
 							log.Trace("Too many findnode failures, dropping", "id", n.ID, "failcount", fails)
 							tab.delete(n)
 						}
 					}
+					//返回的结果进行pingpong操作，如果能够pinggong成功且k桶不满，将成功的节点放入k桶中某个桶的最前端
+					//如果k桶是满的,将节点放入替换列表
 					reply <- tab.bondall(r)
 				}()
 			}
 		}
+		//如果没有goroutine在请求， 说明result中的节点都是最新的，且都询问过
 		if pendingQueries == 0 {
 			// we have asked all closest nodes, stop the search
 			break
 		}
 		// wait for the next reply
+		//返回结果
 		for _, n := range <-reply {
 			if n != nil && !seen[n.ID] {
 				seen[n.ID] = true
+				//push函数会将节点放入result中,同时会保证reuslt数量最大不超过16(如果result已经是16，push会剔除距离最远的节点)
 				result.push(n, bucketSize)
 			}
 		}
+		//运行到这里，说明某个节点返回了结果
 		pendingQueries--
 	}
 	return result.entries
@@ -360,6 +396,7 @@ func (tab *Table) refresh() <-chan struct{} {
 }
 
 // loop schedules refresh, revalidate runs and coordinates shutdown.
+//主要功能:监听事件
 func (tab *Table) loop() {
 	var (
 		revalidate     = time.NewTimer(tab.nextRevalidateTime())
@@ -380,12 +417,14 @@ loop:
 	for {
 		select {
 		case <-refresh.C:
+			//定时刷新k桶事件,30分钟
 			tab.seedRand()
 			if refreshDone == nil {
 				refreshDone = make(chan struct{})
 				go tab.doRefresh(refreshDone)
 			}
 		case req := <-tab.refreshReq:
+			//刷新k桶请求事件
 			waiting = append(waiting, req)
 			if refreshDone == nil {
 				refreshDone = make(chan struct{})
@@ -396,10 +435,12 @@ loop:
 				close(ch)
 			}
 			waiting, refreshDone = nil, nil
+			//验证数据库中节点有效性定时器, 10秒钟
 		case <-revalidate.C:
 			go tab.doRevalidate(revalidateDone)
 		case <-revalidateDone:
 			revalidate.Reset(tab.nextRevalidateTime())
+			//定时将节点存入数据库, 30秒钟,如果k桶中的某个节点在k桶中存在时间超过5分钟,认为它是一个比较稳定的几点，将他放入数据库中
 		case <-copyNodes.C:
 			go tab.copyBondedNodes()
 		case <-tab.closeReq:
