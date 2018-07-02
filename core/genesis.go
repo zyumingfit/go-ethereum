@@ -156,19 +156,24 @@ func SetupGenesisBlock(db ethdb.Database, genesis *Genesis) (*params.ChainConfig
 	}
 
 	// Just commit the new block if there is no stored genesis block.
+	//从规范连上获取第一个区块的hash
 	stored := rawdb.ReadCanonicalHash(db, 0)
 	if (stored == common.Hash{}) {
+		//如果规范连上第一个区块的hash值为0， 说明目前还没有上帝区块
+		//如果配置参数中没有指定上帝区块,使用默认的上帝区块
 		if genesis == nil {
 			log.Info("Writing default main-net genesis block")
 			genesis = DefaultGenesisBlock()
 		} else {
 			log.Info("Writing custom genesis block")
 		}
+		//如果配置参数中指定了上帝区块，则直接将指定的上帝区块存入数据库
 		block, err := genesis.Commit(db)
 		return genesis.Config, block.Hash(), err
 	}
 
 	// Check whether the genesis block is already written.
+	//如果参数指定中指定了上帝区块，比较数据库中的上帝区块和参数指定的上帝区块是否相同， 如果不同返回错误
 	if genesis != nil {
 		hash := genesis.ToBlock(nil).Hash()
 		if hash != stored {
