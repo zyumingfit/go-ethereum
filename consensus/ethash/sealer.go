@@ -28,10 +28,14 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
+	"fmt"
 )
 
 // Seal implements consensus.Engine, attempting to find a nonce that satisfies
 // the block's difficulty requirements.
+//主要功能:挖矿入口函数
+//task1:获取当前的CPU数,假设为n
+//task2:启动n个go程进行挖矿
 func (ethash *Ethash) Seal(chain consensus.ChainReader, block *types.Block, stop <-chan struct{}) (*types.Block, error) {
 	// If we're running a fake PoW, simply return a 0 nonce immediately
 	if ethash.config.PowMode == ModeFake || ethash.config.PowMode == ModeFullFake {
@@ -58,12 +62,19 @@ func (ethash *Ethash) Seal(chain consensus.ChainReader, block *types.Block, stop
 		ethash.rand = rand.New(rand.NewSource(seed.Int64()))
 	}
 	ethash.lock.Unlock()
+	//------------------------------------------task1-------------------------------------
+	//task1:获取当前的CPU数,假设为n
+	//--------------------------------------------------------------------------------------
 	if threads == 0 {
 		threads = runtime.NumCPU()
 	}
 	if threads < 0 {
 		threads = 0 // Allows disabling local mining without extra logic around local/remote
 	}
+
+	//------------------------------------------task2-------------------------------------
+	//task3:启动n个go程进行挖矿
+	//--------------------------------------------------------------------------------------
 	var pend sync.WaitGroup
 	for i := 0; i < threads; i++ {
 		pend.Add(1)
@@ -92,6 +103,8 @@ func (ethash *Ethash) Seal(chain consensus.ChainReader, block *types.Block, stop
 	return result, nil
 }
 
+//主要功能:挖矿函数
+//task1:循环递增nonce进行hash运算,直到满足条件终止
 // mine is the actual proof-of-work miner that searches for a nonce starting from
 // seed that results in correct final block difficulty.
 func (ethash *Ethash) mine(block *types.Block, id int, seed uint64, abort chan struct{}, found chan *types.Block) {
@@ -126,8 +139,12 @@ search:
 				ethash.hashrate.Mark(attempts)
 				attempts = 0
 			}
+			//------------------------------------------task1-------------------------------------
+			//task1: 循环递增nonce进行hash运算,直到满足条件终止
+			//--------------------------------------------------------------------------------------
 			// Compute the PoW value of this nonce
 			digest, result := hashimotoFull(dataset.dataset, hash, nonce)
+			//如果计算结果小于等于目标值
 			if new(big.Int).SetBytes(result).Cmp(target) <= 0 {
 				// Correct nonce found, create a new header with it
 				header = types.CopyHeader(header)

@@ -136,16 +136,31 @@ func (evm *EVM) Cancel() {
 // parameters. It also handles any necessary value transfer required and takes
 // the necessary steps to create accounts and reverses the state in case of an
 // execution error or failed value transfer.
+//主要功能：执行一个交易
+//参数： caller 转出方地址
+//      addr   转入方地址
+//      input  调用参数
+//      gas    当前交易的剩余gas
+//      value  转账额度
+//task1: 交易执行前的检查:1.递归深度判断 2.余额是否足够
+//task2: 如果世界状态中还不存在这个账号,则创建账号
+//task3:进行转账
+//task4:创建一个待执行的合约对象,并执行
 func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
+	//-------------------------------task1------------------------------------
+	//task1: 交易执行前的检查:1.递归深度判断 2.余额是否足够
+	//------------------------------------------------------------------------
+	//如果不允许递归同时递归深度大于0， 直接退出
 	if evm.vmConfig.NoRecursion && evm.depth > 0 {
 		return nil, gas, nil
 	}
-
 	// Fail if we're trying to execute above the call depth limit
+	//如果递归深度大于1024，直接退出
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
 	}
 	// Fail if we're trying to transfer more than the available balance
+	//判断交易发起方的账户中余额是否足够完成转账,如果不够直接退出
 	if !evm.Context.CanTransfer(evm.StateDB, caller.Address(), value) {
 		return nil, gas, ErrInsufficientBalance
 	}
@@ -154,11 +169,15 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 		to       = AccountRef(addr)
 		snapshot = evm.StateDB.Snapshot()
 	)
+	//-------------------------------task2------------------------------------
+	//task2: 如果世界状态中还不存在这个账号,则创建账号
+	//------------------------------------------------------------------------
 	if !evm.StateDB.Exist(addr) {
 		precompiles := PrecompiledContractsHomestead
 		if evm.ChainConfig().IsByzantium(evm.BlockNumber) {
 			precompiles = PrecompiledContractsByzantium
 		}
+		//硬分叉处理
 		if precompiles[addr] == nil && evm.ChainConfig().IsEIP158(evm.BlockNumber) && value.Sign() == 0 {
 			// Calling a non existing account, don't do antything, but ping the tracer
 			if evm.vmConfig.Debug && evm.depth == 0 {
@@ -167,12 +186,19 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 			}
 			return nil, gas, nil
 		}
+		//创建一个账户
 		evm.StateDB.CreateAccount(addr)
 	}
+	//-------------------------------task3------------------------------------
+	//task3:进行转账
+	//------------------------------------------------------------------------
 	evm.Transfer(evm.StateDB, caller.Address(), to.Address(), value)
 
 	// Initialise a new contract and set the code that is to be used by the EVM.
 	// The contract is a scoped environment for this execution context only.
+	//-------------------------------task4------------------------------------
+	//task4:创建一个待执行的合约对象,并执行
+	//------------------------------------------------------------------------
 	contract := NewContract(caller, to, value, gas)
 	contract.SetCallCode(&addr, evm.StateDB.GetCodeHash(addr), evm.StateDB.GetCode(addr))
 
@@ -186,13 +212,19 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 			evm.vmConfig.Tracer.CaptureEnd(ret, gas-contract.Gas, time.Since(start), err)
 		}()
 	}
+	//执行合约
 	ret, err = run(evm, contract, input)
 
 	// When an error was returned by the EVM or when setting the creation code
 	// above we revert to the snapshot and consume any gas remaining. Additionally
 	// when we're in homestead this also counts for code storage gas errors.
+	//-------------------------------task5------------------------------------
+	//task5:处理交易执行返回值
+	//------------------------------------------------------------------------
 	if err != nil {
+		//如果执行失败,回复上一个交易执行后的快照状态
 		evm.StateDB.RevertToSnapshot(snapshot)
+		//如果不是revert指令导致的错误， 需要扣除gas
 		if err != errExecutionReverted {
 			contract.UseGas(contract.Gas)
 		}
@@ -207,16 +239,21 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 //
 // CallCode differs from Call in the sense that it executes the given address'
 // code with the caller as context.
+//主要功能:调用给定地址的只能合约，等同与Call函数,
+//   callcode指令调用, opcode:CALLCODE 0xf2
 func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
+	//如果不允许递归同时递归深度大于0， 直接退出
 	if evm.vmConfig.NoRecursion && evm.depth > 0 {
 		return nil, gas, nil
 	}
 
 	// Fail if we're trying to execute above the call depth limit
+	//如果递归深度大于1024，直接退出
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
 	}
 	// Fail if we're trying to transfer more than the available balance
+	//判断交易发起方的账户中余额是否足够完成转账,如果不够直接退出
 	if !evm.CanTransfer(evm.StateDB, caller.Address(), value) {
 		return nil, gas, ErrInsufficientBalance
 	}
@@ -228,6 +265,7 @@ func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, 
 	// initialise a new contract and set the code that is to be used by the
 	// EVM. The contract is a scoped environment for this execution context
 	// only.
+	//创建一个待执行的合约对象,并执行,然后处理回值
 	contract := NewContract(caller, to, value, gas)
 	contract.SetCallCode(&addr, evm.StateDB.GetCodeHash(addr), evm.StateDB.GetCode(addr))
 
@@ -235,6 +273,7 @@ func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, 
 	if err != nil {
 		evm.StateDB.RevertToSnapshot(snapshot)
 		if err != errExecutionReverted {
+			//如果不是revert指令导致的错误， 需要扣除gas
 			contract.UseGas(contract.Gas)
 		}
 	}
@@ -247,10 +286,12 @@ func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, 
 // DelegateCall differs from CallCode in the sense that it executes the given address'
 // code with the caller as context and the caller is set to the caller of the caller.
 func (evm *EVM) DelegateCall(caller ContractRef, addr common.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error) {
+	//如果不允许递归同时递归深度大于0， 直接退出
 	if evm.vmConfig.NoRecursion && evm.depth > 0 {
 		return nil, gas, nil
 	}
 	// Fail if we're trying to execute above the call depth limit
+	//如果递归深度大于1024，直接退出
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
 	}
@@ -260,6 +301,7 @@ func (evm *EVM) DelegateCall(caller ContractRef, addr common.Address, input []by
 		to       = AccountRef(caller.Address())
 	)
 
+	//创建一个待执行的合约对象,并执行,然后处理回值
 	// Initialise a new contract and make initialise the delegate values
 	contract := NewContract(caller, to, nil, gas).AsDelegate()
 	contract.SetCallCode(&addr, evm.StateDB.GetCodeHash(addr), evm.StateDB.GetCode(addr))
@@ -268,6 +310,7 @@ func (evm *EVM) DelegateCall(caller ContractRef, addr common.Address, input []by
 	if err != nil {
 		evm.StateDB.RevertToSnapshot(snapshot)
 		if err != errExecutionReverted {
+			//如果不是revert指令导致的错误， 需要扣除gas
 			contract.UseGas(contract.Gas)
 		}
 	}
@@ -317,40 +360,73 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 	return ret, contract.Gas, err
 }
 
+//主要功能：执行一个交易
+//参数： caller 转出方地址
+//      code   转入方地址
+//      gas    当前交易的剩余gas
+//      value  转账额度
+//task1: 交易执行前的检查:1.递归深度判断 2.余额是否足够
+//task2: 确保当前要创建的地址在世界状态中没有合约存在, 如果存在，直接返回
+//task3: 创建一个新账户,设置新账户的nonce为1
+//task4: 进行转账
+//task5: 创建一个待执行的合约对象,并执行
+//task6: 处理返回值
 // Create creates a new contract using code as deployment code.
 func (evm *EVM) Create(caller ContractRef, code []byte, gas uint64, value *big.Int) (ret []byte, contractAddr common.Address, leftOverGas uint64, err error) {
 
+	//-------------------------------task1------------------------------------
+	//task1: 交易执行前的检查:1.递归深度判断 2.余额是否足够
+	//------------------------------------------------------------------------
 	// Depth check execution. Fail if we're trying to execute above the
 	// limit.
+	//如果递归深度大于1024，直接退出
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, common.Address{}, gas, ErrDepth
 	}
+	//判断交易发起方的账户中余额是否足够完成转账,如果不够直接退出
 	if !evm.CanTransfer(evm.StateDB, caller.Address(), value) {
 		return nil, common.Address{}, gas, ErrInsufficientBalance
 	}
+	//-------------------------------task2------------------------------------
+	//task2: 确保当前要创建的地址在世界状态中没有合约存在, 如果存在，直接返回
+	//------------------------------------------------------------------------
 	// Ensure there's no existing contract already at the designated address
 	nonce := evm.StateDB.GetNonce(caller.Address())
 	evm.StateDB.SetNonce(caller.Address(), nonce+1)
 
+	//注意：合约的地址是发起部署合约的账户地址与nonce值做keccak256得到
 	contractAddr = crypto.CreateAddress(caller.Address(), nonce)
 	contractHash := evm.StateDB.GetCodeHash(contractAddr)
 	if evm.StateDB.GetNonce(contractAddr) != 0 || (contractHash != (common.Hash{}) && contractHash != emptyCodeHash) {
 		return nil, common.Address{}, 0, ErrContractAddressCollision
 	}
+	//-------------------------------task3------------------------------------
+	//task3: 创建一个新账户,设置新账户的nonce为1
+	//------------------------------------------------------------------------
 	// Create a new account on the state
+	//创建一个新账户
 	snapshot := evm.StateDB.Snapshot()
 	evm.StateDB.CreateAccount(contractAddr)
+	//创建设置新账户的nonce为1
 	if evm.ChainConfig().IsEIP158(evm.BlockNumber) {
 		evm.StateDB.SetNonce(contractAddr, 1)
 	}
+	//-------------------------------task4------------------------------------
+	//task4: 进行转账
+	//------------------------------------------------------------------------
 	evm.Transfer(evm.StateDB, caller.Address(), contractAddr, value)
 
 	// initialise a new contract and set the code that is to be used by the
 	// EVM. The contract is a scoped environment for this execution context
 	// only.
+
+	//-------------------------------task5------------------------------------
+	//task5: 创建一个待执行的合约对象,并执行
+	//------------------------------------------------------------------------
 	contract := NewContract(caller, AccountRef(contractAddr), value, gas)
 	contract.SetCallCode(&contractAddr, crypto.Keccak256Hash(code), code)
 
+	//如果不允许递归同时递归深度大于0， 直接退出
 	if evm.vmConfig.NoRecursion && evm.depth > 0 {
 		return nil, contractAddr, gas, nil
 	}
@@ -360,8 +436,13 @@ func (evm *EVM) Create(caller ContractRef, code []byte, gas uint64, value *big.I
 	}
 	start := time.Now()
 
+	//执行合约初始化代码
 	ret, err = run(evm, contract, nil)
 
+	//-------------------------------task5------------------------------------
+	//task6: 处理返回值
+	//------------------------------------------------------------------------
+	//判断合约代码的字节数是否大于24576
 	// check whether the max code size has been exceeded
 	maxCodeSizeExceeded := evm.ChainConfig().IsEIP158(evm.BlockNumber) && len(ret) > params.MaxCodeSize
 	// if the contract creation ran successfully and no errors were returned
@@ -369,10 +450,13 @@ func (evm *EVM) Create(caller ContractRef, code []byte, gas uint64, value *big.I
 	// be stored due to not enough gas set an error and let it be handled
 	// by the error checking condition below.
 	if err == nil && !maxCodeSizeExceeded {
+		//计算本次合约创建消耗的gas,每字节200gas
 		createDataGas := uint64(len(ret)) * params.CreateDataGas
 		if contract.UseGas(createDataGas) {
+			//交易gas余额足够，成功部署合约，将合约代码设置到账户存储中
 			evm.StateDB.SetCode(contractAddr, ret)
 		} else {
+			//账户余额不足，设置错误返回值
 			err = ErrCodeStoreOutOfGas
 		}
 	}
@@ -380,13 +464,17 @@ func (evm *EVM) Create(caller ContractRef, code []byte, gas uint64, value *big.I
 	// When an error was returned by the EVM or when setting the creation code
 	// above we revert to the snapshot and consume any gas remaining. Additionally
 	// when we're in homestead this also counts for code storage gas errors.
+	//如果代码长度超限或其他执行错误
 	if maxCodeSizeExceeded || (err != nil && (evm.ChainConfig().IsHomestead(evm.BlockNumber) || err != ErrCodeStoreOutOfGas)) {
+		//回复快照
 		evm.StateDB.RevertToSnapshot(snapshot)
+		//如果不是revert指令导致的错误， 需要扣除gas
 		if err != errExecutionReverted {
 			contract.UseGas(contract.Gas)
 		}
 	}
 	// Assign err if contract code size exceeds the max while the err is still empty.
+	//如果只是代码长度超限，设置错误返回值
 	if maxCodeSizeExceeded && err == nil {
 		err = errMaxCodeSizeExceeded
 	}

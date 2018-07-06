@@ -43,29 +43,51 @@ type Backend interface {
 }
 
 // Miner creates blocks and searches for proof-of-work values.
+//miner实现对worker进行管理， 订阅外部事件，控制worker的启动和停止。
 type Miner struct {
 	mux *event.TypeMux
 
-	worker *worker
+	worker *worker //管理挖矿模块agent、负责打包交易
 
-	coinbase common.Address
-	mining   int32
-	eth      Backend
-	engine   consensus.Engine
+	coinbase common.Address //旷工地址
+	mining   int32    //挖矿状态 1表示正在挖矿， 0表示不在挖矿
+	eth      Backend  //以太坊对象
+	engine   consensus.Engine //一致性引擎
 
+	//标示是否可以开始挖矿, 由于区块开始同步事件导致canStart设置为0
+	//该标志被
 	canStart    int32 // can start indicates whether we can start the mining operation
+	//标示是否应该启动
+	//该标志被Miner.Start和Miner.Stop控制
 	shouldStart int32 // should start indicates whether we should start after sync
 }
 
+
+//主要功能:初始化miner对象
+//task1:实例化miner类
+//task2:向work中注册agent
+//task3:开启事件监听go程
 func New(eth Backend, config *params.ChainConfig, mux *event.TypeMux, engine consensus.Engine) *Miner {
-	miner := &Miner{
+
+	//--------------------------------------task1--------------------------------------
+	//task1:根据外部参数或默认参数实例化BlockChain类，从数据库中加载规范链状态到BlockChain中
+	//---------------------------------------------------------------------------------
+	 miner := &Miner{
 		eth:      eth,
 		mux:      mux,
 		engine:   engine,
 		worker:   newWorker(config, engine, common.Address{}, eth, mux),
 		canStart: 1,
 	}
+
+	//--------------------------------------task2--------------------------------------
+	//task2:向work中注册agent
+	//---------------------------------------------------------------------------------
 	miner.Register(NewCpuAgent(eth.BlockChain(), engine))
+
+	//--------------------------------------task3--------------------------------------
+	//task3:开启事件监听go程
+	//---------------------------------------------------------------------------------
 	go miner.update()
 
 	return miner
@@ -75,11 +97,17 @@ func New(eth Backend, config *params.ChainConfig, mux *event.TypeMux, engine con
 // It's entered once and as soon as `Done` or `Failed` has been broadcasted the events are unregistered and
 // the loop is exited. This to prevent a major security vuln where external parties can DOS you with blocks
 // and halt your mining operation for as long as the DOS continues.
+//主要功能:事件监听go程
+//task1:收到区块同步事件,如果正在挖矿，则停止挖矿
+//task2:收到区块同步结束或者同步失败事件，尝试启动挖矿,取消事件订阅
 func (self *Miner) update() {
 	events := self.mux.Subscribe(downloader.StartEvent{}, downloader.DoneEvent{}, downloader.FailedEvent{})
 out:
 	for ev := range events.Chan() {
 		switch ev.Data.(type) {
+		//--------------------------------------task1--------------------------------------
+		//task1:根据外部参数或默认参数实例化BlockChain类，从数据库中加载规范链状态到BlockChain中
+		//---------------------------------------------------------------------------------
 		case downloader.StartEvent:
 			atomic.StoreInt32(&self.canStart, 0)
 			if self.Mining() {
@@ -87,6 +115,9 @@ out:
 				atomic.StoreInt32(&self.shouldStart, 1)
 				log.Info("Mining aborted due to sync")
 			}
+			//--------------------------------------task2--------------------------------------
+			//task2:收到区块同步结束或者同步失败事件，尝试启动挖矿,取消事件订阅
+			//---------------------------------------------------------------------------------
 		case downloader.DoneEvent, downloader.FailedEvent:
 			shouldStart := atomic.LoadInt32(&self.shouldStart) == 1
 
@@ -103,22 +134,45 @@ out:
 	}
 }
 
+//主要功能:调用work启动挖矿
+//task1:设置coinbase
+//task2:如果canStart为0,直接返回
+//task3:调用work启动agent等待任务
+//task4:调用work向agent提交一个新任务
 func (self *Miner) Start(coinbase common.Address) {
 	atomic.StoreInt32(&self.shouldStart, 1)
+	//--------------------------------------task1--------------------------------------
+	//task1:根据外部参数或默认参数实例化BlockChain类，从数据库中加载规范链状态到BlockChain中
+	//---------------------------------------------------------------------------------
 	self.SetEtherbase(coinbase)
 
+	//--------------------------------------task2--------------------------------------
+	//task2:如果canStart为0,直接返回
+	//---------------------------------------------------------------------------------
 	if atomic.LoadInt32(&self.canStart) == 0 {
 		log.Info("Network syncing, will start miner afterwards")
 		return
 	}
 	atomic.StoreInt32(&self.mining, 1)
 
+
 	log.Info("Starting mining operation")
+	//--------------------------------------task3--------------------------------------
+	//task3:调用work启动agent等待任务
+	//---------------------------------------------------------------------------------
 	self.worker.start()
+	//--------------------------------------task4--------------------------------------
+	//task4:调用work启动agent等待任务
+	//---------------------------------------------------------------------------------
 	self.worker.commitNewWork()
 }
 
+//主要功能:停止挖矿
+//task1:调用work停止agent
 func (self *Miner) Stop() {
+	//--------------------------------------task1--------------------------------------
+	//task1:调用work停止agent
+	//---------------------------------------------------------------------------------
 	self.worker.stop()
 	atomic.StoreInt32(&self.mining, 0)
 	atomic.StoreInt32(&self.shouldStart, 0)

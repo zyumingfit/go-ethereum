@@ -28,10 +28,10 @@ import (
 type CpuAgent struct {
 	mu sync.Mutex
 
-	workCh        chan *Work
-	stop          chan struct{}
-	quitCurrentOp chan struct{}
-	returnCh      chan<- *Result
+	workCh        chan *Work //接收挖矿任务管道
+	stop          chan struct{} //停止管道
+	quitCurrentOp chan struct{} //停止当前挖矿操作的管道
+	returnCh      chan<- *Result //worker通过这个管道接受挖完的区块
 
 	chain  consensus.ChainReader
 	engine consensus.Engine
@@ -67,26 +67,41 @@ done:
 		}
 	}
 }
-
+//主要功能:启动接受事件go程等待挖矿任务
+//task1:启动接受事件go程等待挖矿任务
 func (self *CpuAgent) Start() {
 	if !atomic.CompareAndSwapInt32(&self.isMining, 0, 1) {
 		return // agent already started
 	}
+	//--------------------------------------task1--------------------------------------
+	//task1:接收到规范链更新事件后，提交一个新区块的挖矿工作
+	// ---------------------------------------------------------------------------------
 	go self.update()
 }
 
+//主要功能:接收挖矿任务事件和挖矿停止事件
+//task1:接收挖矿任务事件
+//task2:接受停止挖矿事件
 func (self *CpuAgent) update() {
 out:
 	for {
 		select {
+		//--------------------------------------task1--------------------------------------
+		//task1:接收挖矿任务事件
+		// ---------------------------------------------------------------------------------
 		case work := <-self.workCh:
 			self.mu.Lock()
+			//如果退出任务管道不为空,就关闭它
 			if self.quitCurrentOp != nil {
 				close(self.quitCurrentOp)
 			}
 			self.quitCurrentOp = make(chan struct{})
+			//调用一致性引擎进行挖矿
 			go self.mine(work, self.quitCurrentOp)
 			self.mu.Unlock()
+		//--------------------------------------task1--------------------------------------
+		//task2:接受停止挖矿事件
+		// ---------------------------------------------------------------------------------
 		case <-self.stop:
 			self.mu.Lock()
 			if self.quitCurrentOp != nil {
@@ -99,6 +114,9 @@ out:
 	}
 }
 
+//主要功能:调用一致性引擎进行挖矿
+//task1:如果挖矿成功，则将结果通过returnCh返回给Worker
+//task2:如果发生错误，则将nil通过returnCh返回给Worker
 func (self *CpuAgent) mine(work *Work, stop <-chan struct{}) {
 	if result, err := self.engine.Seal(self.chain, work.Block, stop); result != nil {
 		log.Info("Successfully sealed new block", "number", result.Number(), "hash", result.Hash())

@@ -86,16 +86,27 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 // for the transaction, gas used and an error if the transaction failed,
 // indicating the block was invalid.
 func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, uint64, error) {
+	//------------------------------------------task1-------------------------------------
+	//task1:将交易转换成Message
+	//--------------------------------------------------------------------------------------
 	msg, err := tx.AsMessage(types.MakeSigner(config, header.Number))
 	if err != nil {
 		return nil, 0, err
 	}
+	//------------------------------------------task2-------------------------------------
+	//task2:初始化一个EVM执行环境
+	//--------------------------------------------------------------------------------------
 	// Create a new context to be used in the EVM environment
+	//用message初始化一个执行上下文
 	context := NewEVMContext(msg, header, bc, author)
 	// Create a new environment which holds all relevant information
 	// about the transaction and calling mechanisms.
+	//使用上下文初始化一个EVM执行环境
 	vmenv := vm.NewEVM(context, statedb, config, cfg)
 	// Apply the transaction to the current state (included in the env)
+	//------------------------------------------task3-------------------------------------
+	//task3:执行交易，改变stateDB世界状态,然后生成收据
+	//--------------------------------------------------------------------------------------
 	_, gas, failed, err := ApplyMessage(vmenv, msg, gp)
 	if err != nil {
 		return nil, 0, err
@@ -107,8 +118,10 @@ func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *commo
 	} else {
 		root = statedb.IntermediateRoot(config.IsEIP158(header.Number)).Bytes()
 	}
+	//增加header中的usedGas
 	*usedGas += gas
 
+	//
 	// Create a new receipt for the transaction, storing the intermediate root and gas used by the tx
 	// based on the eip phase, we're passing wether the root touch-delete accounts.
 	receipt := types.NewReceipt(root, failed, *usedGas)

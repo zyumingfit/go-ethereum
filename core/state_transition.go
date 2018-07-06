@@ -49,6 +49,7 @@ The state transitioning model does all all the necessary work to work out a vali
 6) Derive new state root
 */
 type StateTransition struct {
+	//区块工作环境中的gas剩余额度
 	gp         *GasPool
 	msg        Message
 	gas        uint64
@@ -74,14 +75,19 @@ type Message interface {
 	CheckNonce() bool
 	Data() []byte
 }
-
+//主要功能：计算固定消耗 + 数据存储消耗(合约账户)
+//task1: 统计固定消耗
+//task2: 统计非0值数据的消耗
+//task3: 统计0值数据的消耗
 // IntrinsicGas computes the 'intrinsic gas' for a message with the given data.
 func IntrinsicGas(data []byte, contractCreation, homestead bool) (uint64, error) {
 	// Set the starting gas for the raw transaction
 	var gas uint64
 	if contractCreation && homestead {
+		//如果是合约创建并且是家园版本， 固定消耗为 53000gas
 		gas = params.TxGasContractCreation
 	} else {
+		//如果是交易的话，固定消耗为 21000gas
 		gas = params.TxGas
 	}
 	// Bump the required gas by the amount of transactional data
@@ -94,11 +100,20 @@ func IntrinsicGas(data []byte, contractCreation, homestead bool) (uint64, error)
 			}
 		}
 		// Make sure we don't exceed uint64 for all data combinations
+		//-------------------------------task1------------------------------------
+		//task1: 统计非0值数据的消耗
+		//------------------------------------------------------------------------
+		//确保    固定消耗+ 非0值的数量×68 <= 64位能表示的最大内存值
 		if (math.MaxUint64-gas)/params.TxDataNonZeroGas < nz {
 			return 0, vm.ErrOutOfGas
 		}
+		//每字节68gas
 		gas += nz * params.TxDataNonZeroGas
 
+		//-------------------------------task2------------------------------------
+		//task3: 统计0值数据的消耗
+		//------------------------------------------------------------------------
+		//确保   确定消耗 + 0值的数量×4 <= 64位能表示的最大数
 		z := uint64(len(data)) - nz
 		if (math.MaxUint64-gas)/params.TxDataZeroGas < z {
 			return 0, vm.ErrOutOfGas
@@ -151,19 +166,24 @@ func (st *StateTransition) useGas(amount uint64) error {
 
 func (st *StateTransition) buyGas() error {
 	mgval := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), st.gasPrice)
+	//账户里的gas不够支付交易的gas
 	if st.state.GetBalance(st.msg.From()).Cmp(mgval) < 0 {
 		return errInsufficientBalanceForGas
 	}
+	//从Work的gasPool中减去当前交易的额度
 	if err := st.gp.SubGas(st.msg.Gas()); err != nil {
 		return err
 	}
+	//设置交易工作环境中的初始gas
 	st.gas += st.msg.Gas()
 
+	//初始gas， st.initialGas-st.gas == 剩余部分
 	st.initialGas = st.msg.Gas()
 	st.state.SubBalance(st.msg.From(), mgval)
 	return nil
 }
 
+//主要功能:检查nonce值是否正确,然后从区块工作环境中申请交易的gase额度
 func (st *StateTransition) preCheck() error {
 	// Make sure this transaction's nonce is correct.
 	if st.msg.CheckNonce() {
@@ -181,6 +201,7 @@ func (st *StateTransition) preCheck() error {
 // returning the result including the the used gas. It returns an error if it
 // failed. An error indicates a consensus issue.
 func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bool, err error) {
+	//预先检查nonce和gas值,初始化交易工作环境的gas初始值
 	if err = st.preCheck(); err != nil {
 		return
 	}
@@ -190,10 +211,12 @@ func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bo
 	contractCreation := msg.To() == nil
 
 	// Pay intrinsic gas
+	//计算固定的GAS消耗 + 非0值消耗的gas + 0值消耗的gas
 	gas, err := IntrinsicGas(st.data, contractCreation, homestead)
 	if err != nil {
 		return nil, 0, false, err
 	}
+	//从GAS pool总减去上面计算的gas消耗
 	if err = st.useGas(gas); err != nil {
 		return nil, 0, false, err
 	}
@@ -206,10 +229,13 @@ func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bo
 		vmerr error
 	)
 	if contractCreation {
+		//如果是合约创建, 调用evm.Create创建合约
 		ret, _, st.gas, vmerr = evm.Create(sender, st.data, st.gas, st.value)
 	} else {
 		// Increment the nonce for the next transaction
+		//设置交易发送方的nonce值
 		st.state.SetNonce(msg.From(), st.state.GetNonce(sender.Address())+1)
+		//如果是交易或者是合约调用，调用evm.Call执行交易
 		ret, st.gas, vmerr = evm.Call(sender, st.to(), st.data, st.gas, st.value)
 	}
 	if vmerr != nil {
@@ -221,26 +247,41 @@ func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bo
 			return nil, 0, false, vmerr
 		}
 	}
+	//返回余额给交易发起方
 	st.refundGas()
+	//奖励旷工，gas消耗
 	st.state.AddBalance(st.evm.Coinbase, new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice))
 
 	return ret, st.gasUsed(), vmerr != nil, err
 }
 
+//主要功能：返还gas
+//task1: 计算当前交易的gas余额
+//task2: 增加世界状态状态中的账户余额
+//task3: 增加工作环境剩余余额
 func (st *StateTransition) refundGas() {
 	// Apply refund counter, capped to half of the used gas.
+	//-------------------------------task1------------------------------------
+	//task1: 计算当前交易的gas总余额, 总余额 = 余额 + 系统"返利"
+	//------------------------------------------------------------------------
 	refund := st.gasUsed() / 2
 	if refund > st.state.GetRefund() {
 		refund = st.state.GetRefund()
 	}
 	st.gas += refund
 
+	//-------------------------------task2------------------------------------
+	//task2: 增加世界状态状态中的账户余额
+	//------------------------------------------------------------------------
 	// Return ETH for remaining gas, exchanged at the original rate.
 	remaining := new(big.Int).Mul(new(big.Int).SetUint64(st.gas), st.gasPrice)
 	st.state.AddBalance(st.msg.From(), remaining)
 
 	// Also return remaining gas to the block gas counter so it is
 	// available for the next transaction.
+	//-------------------------------task3------------------------------------
+	//task3: 增加工作环境剩余余额
+	//------------------------------------------------------------------------
 	st.gp.AddGas(st.gas)
 }
 
