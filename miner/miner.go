@@ -70,7 +70,7 @@ type Miner struct {
 func New(eth Backend, config *params.ChainConfig, mux *event.TypeMux, engine consensus.Engine) *Miner {
 
 	//--------------------------------------task1--------------------------------------
-	//task1:根据外部参数或默认参数实例化BlockChain类，从数据库中加载规范链状态到BlockChain中
+	//task1:根据外部参数或默认参数实例化miner类
 	//---------------------------------------------------------------------------------
 	 miner := &Miner{
 		eth:      eth,
@@ -106,7 +106,7 @@ out:
 	for ev := range events.Chan() {
 		switch ev.Data.(type) {
 		//--------------------------------------task1--------------------------------------
-		//task1:根据外部参数或默认参数实例化BlockChain类，从数据库中加载规范链状态到BlockChain中
+		//task1:收到区块同步事件,如果正在挖矿，则停止挖矿
 		//---------------------------------------------------------------------------------
 		case downloader.StartEvent:
 			atomic.StoreInt32(&self.canStart, 0)
@@ -162,7 +162,7 @@ func (self *Miner) Start(coinbase common.Address) {
 	//---------------------------------------------------------------------------------
 	self.worker.start()
 	//--------------------------------------task4--------------------------------------
-	//task4:调用work启动agent等待任务
+	//task4:调用work提交一个任务
 	//---------------------------------------------------------------------------------
 	self.worker.commitNewWork()
 }

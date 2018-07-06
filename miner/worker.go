@@ -109,34 +109,34 @@ type worker struct {
 	mux          *event.TypeMux
 	txsCh        chan core.NewTxsEvent
 	txsSub       event.Subscription
-	chainHeadCh  chan core.ChainHeadEvent
+	chainHeadCh  chan core.ChainHeadEvent   //规范链更新事件管道
 	chainHeadSub event.Subscription
-	chainSideCh  chan core.ChainSideEvent
+	chainSideCh  chan core.ChainSideEvent   //BlockChain写分叉事件接收管道
 	chainSideSub event.Subscription
 	wg           sync.WaitGroup
 
 	agents map[Agent]struct{}
-	recv   chan *Result
+	recv   chan *Result  //接收任务管道
 
 	eth     Backend
 	chain   *core.BlockChain
 	proc    core.Validator
 	chainDb ethdb.Database
 
-	coinbase common.Address
+	coinbase common.Address //旷工地址
 	extra    []byte
 
 	currentMu sync.Mutex
-	current   *Work
+	current   *Work      //当前的区块区块工作环境
 
-	//
 	snapshotMu    sync.RWMutex
 	snapshotBlock *types.Block
-	snapshotState *state.StateDB
+	snapshotState *state.StateDB //状态快照快照
 
 	uncleMu        sync.Mutex
-	possibleUncles map[common.Hash]*types.Block
+	possibleUncles map[common.Hash]*types.Block  //可能的父区块
 
+	//挖矿成功，未确认的区块
 	unconfirmed *unconfirmedBlocks // set of locally mined blocks pending canonicalness confirmations
 
 	// atomic status counters
@@ -147,7 +147,7 @@ type worker struct {
 //主要功能:初始化work类,向agent提交一个新工作
 //task1:使用外部传入的参数或者默认参数初始化worker类
 //task2:注册txpool更新和BlockChain更新事件监听管道
-//task3:启动事件监听go程
+//task3:启动事件监听go程, 规范链更新，blockChain写分叉，交易池更新
 //task4:等待agent挖好矿的区块
 //task5:向agent提交一个新挖矿的工作
 func newWorker(config *params.ChainConfig, engine consensus.Engine, coinbase common.Address, eth Backend, mux *event.TypeMux) *worker {
@@ -181,7 +181,7 @@ func newWorker(config *params.ChainConfig, engine consensus.Engine, coinbase com
 	worker.chainSideSub = eth.BlockChain().SubscribeChainSideEvent(worker.chainSideCh)
 
 	//--------------------------------------task3--------------------------------------
-	//task3:启动事件监听go程
+	//task3:启动事件监听go程, 规范链更新，blockChain写分叉，交易池更新
 	//---------------------------------------------------------------------------------
 	go worker.update()
 
@@ -277,9 +277,9 @@ func (self *worker) unregister(agent Agent) {
 }
 
 //主要功能:监听交易池和blockChain事件
-//task1:接收到规范链更新事件后，提交一个新区块的挖矿工作
+//task1:接收到规范链更新事件后，从交易池获取pending里列表，提交一个新区块的挖矿工作
 //task2:接收到分叉的更新事件后，保存分叉上的区块到可能的父区块列表
-//task3:接受到交易池更新事件后，将新加入交易池的交易池应用到pending状态上
+//task3:接受到交易池更新事件后，提交一个新区块的挖矿工作
 func (self *worker) update() {
 	defer self.txsSub.Unsubscribe()
 	defer self.chainHeadSub.Unsubscribe()
@@ -290,7 +290,7 @@ func (self *worker) update() {
 		select {
 		// Handle ChainHeadEvent
 		//--------------------------------------task1--------------------------------------
-		//task1:接收到规范链更新事件后，提交一个新区块的挖矿工作
+		//task1:接收到规范链更新事件后，从交易池获取pending里列表，提交一个新区块的挖矿工作
 		//---------------------------------------------------------------------------------
 		case <-self.chainHeadCh:
 			self.commitNewWork()
@@ -306,7 +306,7 @@ func (self *worker) update() {
 
 		// Handle NewTxsEvent
 		//--------------------------------------task2--------------------------------------
-		//task3:接受到交易池更新事件后，将新加入交易池的交易池应用到pending状态上
+		//task3:接受到交易池更新事件后，提交一个新区块的挖矿工作
 		//---------------------------------------------------------------------------------
 		case ev := <-self.txsCh:
 			// Apply transactions to the pending state if we're not mining.
@@ -411,10 +411,19 @@ func (self *worker) wait() {
 }
 
 // push sends a new work task to currently live miner agents.
+//主要功能:将打包好的区块提交给agent
+//task1:如果当前不在挖矿直接返回
+//task2:将任务递交给每一个agent
 func (self *worker) push(work *Work) {
+	//--------------------------------------task1--------------------------------------
+	//task1:如果当前不在挖矿直接返回
+	//---------------------------------------------------------------------------------
 	if atomic.LoadInt32(&self.mining) != 1 {
 		return
 	}
+	//--------------------------------------task1--------------------------------------
+	//task2:将任务递交给每一个agent
+	//---------------------------------------------------------------------------------
 	for agent := range self.agents {
 		atomic.AddInt32(&self.atWork, 1)
 		if ch := agent.Work(); ch != nil {
@@ -467,7 +476,7 @@ func (self *worker) makeCurrent(parent *types.Block, header *types.Header) error
 //主要功能:提交一个新工作给agent
 //task1:初始化一个新区块头给待挖矿的区块
 //task2:为当前挖矿周期初始化一个工作环境work
-//task3:获取交易池中每个账户地址的交易列表中的第一个交易
+//task3:获取交易池中每个账户地址的交易列表中的第一个交易后排序， 然后应用这些交易
 //task4:获取两个叔块
 //task5:用给定的状态来创建新区块，同时计算奖励（旷工奖励和叔块旷工奖励）
 //task6:将区块提交给agent
@@ -547,7 +556,7 @@ func (self *worker) commitNewWork() {
 		misc.ApplyDAOHardFork(work.state)
 	}
 	//--------------------------------------task3--------------------------------------
-	//task3:获取交易池中每个账户地址的交易列表中的第一个交易
+	//task3:获取交易池中每个账户地址的交易列表中的第一个交易后排序， 然后应用这些交易
 	//---------------------------------------------------------------------------------
 	pending, err := self.eth.TxPool().Pending()
 	if err != nil {

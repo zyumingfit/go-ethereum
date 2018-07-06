@@ -39,7 +39,12 @@ type CpuAgent struct {
 	isMining int32 // isMining indicates whether the agent is currently mining
 }
 
+//主要功能:根据掺入参数或默认参数实例化CpuAgent类
+//task1:根据掺入参数或默认参数实例化CpuAgent类
 func NewCpuAgent(chain consensus.ChainReader, engine consensus.Engine) *CpuAgent {
+	//--------------------------------------task1--------------------------------------
+	//task1:根据掺入参数或默认参数实例化CpuAgent类
+	// ---------------------------------------------------------------------------------
 	miner := &CpuAgent{
 		chain:  chain,
 		engine: engine,
@@ -74,7 +79,7 @@ func (self *CpuAgent) Start() {
 		return // agent already started
 	}
 	//--------------------------------------task1--------------------------------------
-	//task1:接收到规范链更新事件后，提交一个新区块的挖矿工作
+	//task1:启动接受事件go程等待挖矿任务
 	// ---------------------------------------------------------------------------------
 	go self.update()
 }
