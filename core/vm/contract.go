@@ -45,23 +45,23 @@ type Contract struct {
 	// CallerAddress is the result of the caller which initialised this
 	// contract. However when the "call method" is delegated this value
 	// needs to be initialised to that of the caller's caller.
-	CallerAddress common.Address
-	caller        ContractRef
-	self          ContractRef
+	CallerAddress common.Address //调用者地址
+	caller        ContractRef    //调用者
+	self          ContractRef    //被调合约
 
 	jumpdests destinations // result of JUMPDEST analysis.
 
-	Code     []byte
-	CodeHash common.Hash
-	CodeAddr *common.Address
-	Input    []byte
+	Code     []byte        //合约代码
+	CodeHash common.Hash   //代码hash
+	CodeAddr *common.Address//合约地址
+	Input    []byte     //传入参数
 
-	Gas   uint64
-	value *big.Int
+	Gas   uint64        //交易余额
+	value *big.Int       //转账额
 
 	Args []byte
 
-	DelegateCall bool
+	DelegateCall bool //代理调用
 }
 
 // NewContract returns a new contract environment for the execution of EVM.

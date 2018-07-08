@@ -22,6 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
+
 func makeStackFunc(pop, push int) stackValidationFunc {
 	return func(stack *Stack) error {
 		if err := stack.require(pop); err != nil {

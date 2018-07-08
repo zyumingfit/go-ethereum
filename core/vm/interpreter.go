@@ -130,7 +130,7 @@ func (in *Interpreter) Run(contract *Contract, input []byte) (ret []byte, err er
 	}
 
 	//--------------------------------------task1--------------------------------------
-	//task1:初始化执行循环中的中间变量
+	//task1:初始化执行循环中要用到的中间变量
 	//---------------------------------------------------------------------------------
 	var (
 		op    OpCode        // current opcode
@@ -262,7 +262,7 @@ func (in *Interpreter) Run(contract *Contract, input []byte) (ret []byte, err er
 			//1.返回指令执行错误,直接返回
 			return nil, err
 		case operation.reverts:
-			//2.返回恢复错误，直接返回
+			//2.revert指令返回
 			return res, errExecutionReverted
 		case operation.halts:
 			//3.如果指令为终止指令,则直接退出(STOP, RETURN, SELFDESTRUCT[账户自毁])

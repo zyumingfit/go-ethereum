@@ -57,14 +57,16 @@ func run(evm *EVM, contract *Contract, input []byte) ([]byte, error) {
 type Context struct {
 	// CanTransfer returns whether the account contains
 	// sufficient ether to transfer the value
-	CanTransfer CanTransferFunc
+	CanTransfer CanTransferFunc //判断发送者账户余额
 	// Transfer transfers ether from one account to the other
-	Transfer TransferFunc
+	Transfer TransferFunc    //转账函数
 	// GetHash returns the hash corresponding to n
-	GetHash GetHashFunc
+	GetHash GetHashFunc   //获取区块hash函数
 
 	// Message information
+	//转账方：from
 	Origin   common.Address // Provides information for ORIGIN
+
 	GasPrice *big.Int       // Provides information for GASPRICE
 
 	// Block information
@@ -86,11 +88,11 @@ type Context struct {
 // The EVM should never be reused and is not thread safe.
 type EVM struct {
 	// Context provides auxiliary blockchain related information
-	Context
+	Context //执行上下文
 	// StateDB gives access to the underlying state
-	StateDB StateDB
+	StateDB StateDB //世界状态树
 	// Depth is the current call stack
-	depth int
+	depth int  //调用深度
 
 	// chainConfig contains information about the current chain
 	chainConfig *params.ChainConfig
@@ -101,14 +103,14 @@ type EVM struct {
 	vmConfig Config
 	// global (to this context) ethereum virtual machine
 	// used throughout the execution of the tx.
-	interpreter *Interpreter
+	interpreter *Interpreter //解释器
 	// abort is used to abort the EVM calling operations
 	// NOTE: must be set atomically
 	abort int32
 	// callGasTemp holds the gas available for the current call. This is needed because the
 	// available gas is calculated in gasCall* according to the 63/64 rule and later
 	// applied in opCall*.
-	callGasTemp uint64
+	callGasTemp uint64 //gas临时存储
 }
 
 // NewEVM returns a new EVM. The returned EVM is not thread safe and should
@@ -146,6 +148,7 @@ func (evm *EVM) Cancel() {
 //task2: 如果世界状态中还不存在这个账号,则创建账号
 //task3:进行转账
 //task4:创建一个待执行的合约对象,并执行
+//task5:处理交易执行返回值
 func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
 	//-------------------------------task1------------------------------------
 	//task1: 交易执行前的检查:1.递归深度判断 2.余额是否足够
@@ -239,7 +242,7 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 //
 // CallCode differs from Call in the sense that it executes the given address'
 // code with the caller as context.
-//主要功能:调用给定地址的只能合约，等同与Call函数,
+//主要功能:调用给定地址的智能合约，等同与Call函数,
 //   callcode指令调用, opcode:CALLCODE 0xf2
 func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
 	//如果不允许递归同时递归深度大于0， 直接退出
@@ -360,7 +363,7 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 	return ret, contract.Gas, err
 }
 
-//主要功能：执行一个交易
+//主要功能：部署一个合约,并执行合约的构造函数
 //参数： caller 转出方地址
 //      code   转入方地址
 //      gas    当前交易的剩余gas

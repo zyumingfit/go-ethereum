@@ -49,16 +49,15 @@ The state transitioning model does all all the necessary work to work out a vali
 6) Derive new state root
 */
 type StateTransition struct {
-	//区块工作环境中的gas剩余额度
-	gp         *GasPool
-	msg        Message
-	gas        uint64
+	gp         *GasPool //区块工作环境中的gas剩余额度
+	msg        Message //交易转化成的message
+	gas        uint64  //交易的gas余额
 	gasPrice   *big.Int
-	initialGas uint64
-	value      *big.Int
-	data       []byte
-	state      vm.StateDB
-	evm        *vm.EVM
+	initialGas uint64 //初始gas, 等于交易的gaslimit
+	value      *big.Int //交易的转账额度
+	data       []byte //交易的input
+	state      vm.StateDB //状态树
+	evm        *vm.EVM   //evm对象
 }
 
 // Message represents a message sent to a contract.
@@ -200,8 +199,15 @@ func (st *StateTransition) preCheck() error {
 // TransitionDb will transition the state by applying the current message and
 // returning the result including the the used gas. It returns an error if it
 // failed. An error indicates a consensus issue.
+//主要功能：初始化交易工作环境，执行交易，然后处理交易执行前后的gas增减
+//task1: 预先检查nonce和gas值,初始化交易工作环境的gas初始值
+//task2: 计算并扣除固定gas消耗
+//task3: 调用evm创建或执行交易
+//task4: 奖励旷工
 func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bool, err error) {
-	//预先检查nonce和gas值,初始化交易工作环境的gas初始值
+	//-------------------------------task1------------------------------------
+	//task1: 预先检查nonce和gas值,初始化交易工作环境的gas初始值
+	//------------------------------------------------------------------------
 	if err = st.preCheck(); err != nil {
 		return
 	}
@@ -210,6 +216,9 @@ func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bo
 	homestead := st.evm.ChainConfig().IsHomestead(st.evm.BlockNumber)
 	contractCreation := msg.To() == nil
 
+	//-------------------------------task2------------------------------------
+	//task2: 计算并扣除固定gas消耗
+	//------------------------------------------------------------------------
 	// Pay intrinsic gas
 	//计算固定的GAS消耗 + 非0值消耗的gas + 0值消耗的gas
 	gas, err := IntrinsicGas(st.data, contractCreation, homestead)
@@ -228,6 +237,9 @@ func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bo
 		// error.
 		vmerr error
 	)
+	//-------------------------------task3------------------------------------
+	//task3: 调用evm创建或执行交易
+	//------------------------------------------------------------------------
 	if contractCreation {
 		//如果是合约创建, 调用evm.Create创建合约
 		ret, _, st.gas, vmerr = evm.Create(sender, st.data, st.gas, st.value)
@@ -247,6 +259,9 @@ func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bo
 			return nil, 0, false, vmerr
 		}
 	}
+	//-------------------------------task4------------------------------------
+	//task4: 奖励旷工
+	//------------------------------------------------------------------------
 	//返回余额给交易发起方
 	st.refundGas()
 	//奖励旷工，gas消耗

@@ -85,6 +85,10 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 // and uses the input parameters for its environment. It returns the receipt
 // for the transaction, gas used and an error if the transaction failed,
 // indicating the block was invalid.
+//主要功能：将交易转换成Message，创建EVM对象，调用ApplyMessage执行交易，生成日志对象
+//task1:将交易转换成Message
+//task2:初始化一个EVM执行环境
+//task3:执行交易，改变stateDB世界状态,然后生成收据
 func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, uint64, error) {
 	//------------------------------------------task1-------------------------------------
 	//task1:将交易转换成Message
@@ -105,17 +109,20 @@ func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *commo
 	vmenv := vm.NewEVM(context, statedb, config, cfg)
 	// Apply the transaction to the current state (included in the env)
 	//------------------------------------------task3-------------------------------------
-	//task3:执行交易，改变stateDB世界状态,然后生成收据
+	//task3:执行交易，改变stateDB世界状态,填充header相关成员
 	//--------------------------------------------------------------------------------------
+	//执行交易
 	_, gas, failed, err := ApplyMessage(vmenv, msg, gp)
 	if err != nil {
 		return nil, 0, err
 	}
 	// Update the state with pending changes
 	var root []byte
+	//如果是拜占庭硬分叉,清理世界状态
 	if config.IsByzantium(header.Number) {
 		statedb.Finalise(true)
 	} else {
+		//正常情况下，计算状态树根
 		root = statedb.IntermediateRoot(config.IsEIP158(header.Number)).Bytes()
 	}
 	//增加header中的usedGas
@@ -124,6 +131,7 @@ func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *commo
 	//
 	// Create a new receipt for the transaction, storing the intermediate root and gas used by the tx
 	// based on the eip phase, we're passing wether the root touch-delete accounts.
+	//产生收据
 	receipt := types.NewReceipt(root, failed, *usedGas)
 	receipt.TxHash = tx.Hash()
 	receipt.GasUsed = gas
