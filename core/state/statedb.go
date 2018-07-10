@@ -50,12 +50,12 @@ var (
 // * Contracts
 // * Accounts
 type StateDB struct {
-	db   Database
-	trie Trie
+	db   Database  //数据库
+	trie Trie      //MPT树
 
 	// This map holds 'live' objects, which will get modified while processing a state transition.
-	stateObjects      map[common.Address]*stateObject
-	stateObjectsDirty map[common.Address]struct{}
+	stateObjects      map[common.Address]*stateObject //账户状态缓存
+	stateObjectsDirty map[common.Address]struct{}     //脏账户表，账户变更缓存
 
 	// DB error.
 	// State objects are used by the consensus core and VM which are
@@ -65,7 +65,8 @@ type StateDB struct {
 	dbErr error
 
 	// The refund counter, also used by state transitioning.
-	refund uint64
+	refund uint64    //返利 non 0 -> 0  24000
+				     //返利 Suicide -> 0  15000
 
 	thash, bhash common.Hash
 	txIndex      int
@@ -76,9 +77,13 @@ type StateDB struct {
 
 	// Journal of state modifications. This is the backbone of
 	// Snapshot and RevertToSnapshot.
-	journal        *journal
-	validRevisions []revision
-	nextRevisionId int
+	journal        *journal  //变更日志列表
+	validRevisions []revision  // revision{
+	                           //      id int            /id == nexRevisionId
+	                           //      journalIndex int /*journalIndex == len(journal)*/
+	                           //}
+	                           //
+	nextRevisionId int   //快照计数器
 
 	lock sync.Mutex
 }
@@ -273,9 +278,18 @@ func (self *StateDB) HasSuicided(addr common.Address) bool {
  */
 
 // AddBalance adds amount to the account associated with addr.
+//主要功能：对一个账户添加余额
+//task1: 获取账户对象stateObject
+//task2:增加账户中的余额
 func (self *StateDB) AddBalance(addr common.Address, amount *big.Int) {
+	//-------------------------------task1------------------------------------
+	//task1: 获取账户对象stateObject
+	//------------------------------------------------------------------------
 	stateObject := self.GetOrNewStateObject(addr)
 	if stateObject != nil {
+	//-------------------------------task2------------------------------------
+	//task2:增加账户中的余额
+	//------------------------------------------------------------------------
 		stateObject.AddBalance(amount)
 	}
 }
@@ -308,10 +322,18 @@ func (self *StateDB) SetCode(addr common.Address, code []byte) {
 		stateObject.SetCode(crypto.Keccak256Hash(code), code)
 	}
 }
-
+//主要功能：设置账户的storage状态
+//task1: 获取账户的sateObject对象
+//task2: 设置状态
 func (self *StateDB) SetState(addr common.Address, key, value common.Hash) {
+	//-------------------------------task1------------------------------------
+	//task1: 获取账户的sateObject对象
+	//------------------------------------------------------------------------
 	stateObject := self.GetOrNewStateObject(addr)
 	if stateObject != nil {
+		//-------------------------------task2------------------------------------
+		//task2: 设置状态
+		//------------------------------------------------------------------------
 		stateObject.SetState(self.db, key, value)
 	}
 }
@@ -391,7 +413,9 @@ func (self *StateDB) setStateObject(object *stateObject) {
 
 // Retrieve a state object or create a new state object if nil.
 func (self *StateDB) GetOrNewStateObject(addr common.Address) *stateObject {
+	//从缓存中获取有没有给定地址的账户
 	stateObject := self.getStateObject(addr)
+	//如果缓存中没有，或者缓存中的账户标示为已经删除了,则重新创建一个账户
 	if stateObject == nil || stateObject.deleted {
 		stateObject, _ = self.createObject(addr)
 	}
@@ -400,15 +424,29 @@ func (self *StateDB) GetOrNewStateObject(addr common.Address) *stateObject {
 
 // createObject creates a new state object. If there is an existing account with
 // the given address, it is overwritten and returned as the second return value.
+//主要功能：创建一个新账户
+//task1: 实例化一个stateObject对象
+//task2: 在日志中添加创建新账户事件
+//task3:将新账户添加到缓存中
 func (self *StateDB) createObject(addr common.Address) (newobj, prev *stateObject) {
 	prev = self.getStateObject(addr)
+	//-------------------------------task1------------------------------------
+	//task1: 实例化一个stateObject对象
+	//------------------------------------------------------------------------
 	newobj = newObject(self, addr, Account{})
+	//设置初始的nonce值
 	newobj.setNonce(0) // sets the object to dirty
+	//-------------------------------task2------------------------------------
+	//task2: 在日志中添加创建新账户事件
+	//------------------------------------------------------------------------
 	if prev == nil {
 		self.journal.append(createObjectChange{account: &addr})
 	} else {
 		self.journal.append(resetObjectChange{prev: prev})
 	}
+	//-------------------------------task3------------------------------------
+	//task3:将新账户添加到缓存中
+	//------------------------------------------------------------------------
 	self.setStateObject(newobj)
 	return newobj, prev
 }
@@ -453,11 +491,20 @@ func (db *StateDB) ForEachStorage(addr common.Address, cb func(key, value common
 
 // Copy creates a deep, independent copy of the state.
 // Snapshots of the copied state cannot be applied to the copy.
+//主要功能：状态树拷贝
+//task1:实例化一个新的StateDB
+//task2:拷贝账户缓存列表
+//task3:拷贝脏账户缓存列表
+//task4:拷贝日志
+//task5:拷贝sha3原像
 func (self *StateDB) Copy() *StateDB {
 	self.lock.Lock()
 	defer self.lock.Unlock()
 
 	// Copy all the basic fields, initialize the memory ones
+	//-------------------------------task1------------------------------------
+	//task1:实例化一个新的StateDB
+	//------------------------------------------------------------------------
 	state := &StateDB{
 		db:                self.db,
 		trie:              self.db.CopyTrie(self.trie),
@@ -469,6 +516,9 @@ func (self *StateDB) Copy() *StateDB {
 		preimages:         make(map[common.Hash][]byte),
 		journal:           newJournal(),
 	}
+	//-------------------------------task2------------------------------------
+	//task2:拷贝账户缓存列表
+	//------------------------------------------------------------------------
 	// Copy the dirty states, logs, and preimages
 	for addr := range self.journal.dirties {
 		// As documented [here](https://github.com/ethereum/go-ethereum/pull/16485#issuecomment-380438527),
@@ -483,6 +533,9 @@ func (self *StateDB) Copy() *StateDB {
 	// Above, we don't copy the actual journal. This means that if the copy is copied, the
 	// loop above will be a no-op, since the copy's journal is empty.
 	// Thus, here we iterate over stateObjects, to enable copies of copies
+	//-------------------------------task3------------------------------------
+	//task3:拷贝脏账户缓存列表
+	//------------------------------------------------------------------------
 	for addr := range self.stateObjectsDirty {
 		if _, exist := state.stateObjects[addr]; !exist {
 			state.stateObjects[addr] = self.stateObjects[addr].deepCopy(state)
@@ -490,10 +543,16 @@ func (self *StateDB) Copy() *StateDB {
 		}
 	}
 
+	//-------------------------------task4------------------------------------
+	//task4:拷贝日志
+	//------------------------------------------------------------------------
 	for hash, logs := range self.logs {
 		state.logs[hash] = make([]*types.Log, len(logs))
 		copy(state.logs[hash], logs)
 	}
+	//-------------------------------task5------------------------------------
+	//task5:拷贝sha3原像
+	//------------------------------------------------------------------------
 	for hash, preimage := range self.preimages {
 		state.preimages[hash] = preimage
 	}
@@ -501,26 +560,54 @@ func (self *StateDB) Copy() *StateDB {
 }
 
 // Snapshot returns an identifier for the current revision of the state.
+//主要功能：拍摄快照
+//task1:获取快照id,从0开始计数
+//task2:保存快照，快照id和日志深度
 func (self *StateDB) Snapshot() int {
+	//-------------------------------task1------------------------------------
+	//task1:获取快照id,从0开始计数
+	//------------------------------------------------------------------------
 	id := self.nextRevisionId
 	self.nextRevisionId++
+	//-------------------------------task2------------------------------------
+	//task2:保存快照，快照id和日志深度
+	//------------------------------------------------------------------------
 	self.validRevisions = append(self.validRevisions, revision{id, self.journal.length()})
 	return id
 }
 
+//主要功能：恢复快照
+//task1:检查快照编号是否有效，如果idx无效，则终止程序
+//task2:通过快照编号获取日志长度
+//task3:调用日志中的undo函数进行恢复
+//task4:移除恢复点后面的快照
 // RevertToSnapshot reverts all state changes made since the given revision.
 func (self *StateDB) RevertToSnapshot(revid int) {
 	// Find the snapshot in the stack of valid snapshots.
+	//-------------------------------task1------------------------------------
+	//task1:检查快照编号是否有效，如果idx无效，则终止程序
+	//------------------------------------------------------------------------
 	idx := sort.Search(len(self.validRevisions), func(i int) bool {
 		return self.validRevisions[i].id >= revid
 	})
 	if idx == len(self.validRevisions) || self.validRevisions[idx].id != revid {
 		panic(fmt.Errorf("revision id %v cannot be reverted", revid))
 	}
+	//-------------------------------task2------------------------------------
+	//task2:通过快照编号获取日志长度
+	//------------------------------------------------------------------------
+	//当前快照的日志长度
 	snapshot := self.validRevisions[idx].journalIndex
 
+	//-------------------------------task3------------------------------------
+	//task3:调用日志中的undo函数进行恢复
+	//------------------------------------------------------------------------
 	// Replay the journal to undo changes and remove invalidated snapshots
+	//注意传入的是快照长度不是索引
 	self.journal.revert(self, snapshot)
+	//-------------------------------task4------------------------------------
+	//task4:移除恢复点后面的快照
+	//------------------------------------------------------------------------
 	self.validRevisions = self.validRevisions[:idx]
 }
 
@@ -531,8 +618,21 @@ func (self *StateDB) GetRefund() uint64 {
 
 // Finalise finalises the state by removing the self destructed objects
 // and clears the journal as well as the refunds.
+//主要功能：根据操作日志，更新数据库，同时删除快照等信息
+//task1:遍历被更新的账户, 将被更新的账户写入状态树
+//		step1: 确保账户缓存列表里也存在,否则跳过
+//		step2: 将账户的storage变更写入storage树，然后将账户写入状态树
+//		step3:记录那些账户被更新过
+//task2:清除日志信息、快照信息、返利信息
 func (s *StateDB) Finalise(deleteEmptyObjects bool) {
+	//-------------------------------task1------------------------------------
+	//task1:遍历被更新的账户, 将被更新的账户写入状态树
+	//------------------------------------------------------------------------
 	for addr := range s.journal.dirties {
+		//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+		//step1: 确保账户缓存列表里也存在,否则跳过
+		//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+		//确保账户缓存列表里也存在,否则跳过
 		stateObject, exist := s.stateObjects[addr]
 		if !exist {
 			// ripeMD is 'touched' at block 1714175, in tx 0x1237f737031e40bcde4a8b7e717b2d15e3ecadfe49bb1bbc71ee9deb09c6fcf2
@@ -544,23 +644,45 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 			continue
 		}
 
+		//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+		//step2: 将账户的storage变更写入storage树，然后将账户写入状态树
+		//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+		//如果账户已经销毁了,从状态树中删除账户
+		//如果账户为空，并且deleteEmptyObjects标志为true,从状态树中删除账户
 		if stateObject.suicided || (deleteEmptyObjects && stateObject.empty()) {
 			s.deleteStateObject(stateObject)
 		} else {
+			//将账户的storage变更写入storage树,更新状态树中的storage树根
 			stateObject.updateRoot(s.db)
+			//将当前账户写入状态树
 			s.updateStateObject(stateObject)
 		}
+		//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+		//step3:记录那些账户被更新过
+		//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 		s.stateObjectsDirty[addr] = struct{}{}
 	}
 	// Invalidate journal because reverting across transactions is not allowed.
+	//-------------------------------task2------------------------------------
+	//task2:清除日志信息、快照信息、返利信息
+	//------------------------------------------------------------------------
 	s.clearJournalAndRefund()
 }
 
 // IntermediateRoot computes the current root hash of the state trie.
 // It is called in between transactions to get the root hash that
 // goes into transaction receipts.
+//主要功能：更新状态树，同时计算状态树根
+//task1:遍历被更新的账户, 将被更新的账户写入状态树,清除变更日志、快照、返利
+//task2:计算状态树树根
 func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
+	//-------------------------------task1------------------------------------
+	//task1:遍历被更新的账户, 将被更新的账户写入状态树,清除变更日志、快照、返利
+	//------------------------------------------------------------------------
 	s.Finalise(deleteEmptyObjects)
+	//-------------------------------task1------------------------------------
+	//task2:计算状态树树根
+	//------------------------------------------------------------------------
 	return s.trie.Hash()
 }
 
@@ -579,19 +701,31 @@ func (s *StateDB) clearJournalAndRefund() {
 }
 
 // Commit writes the state to the underlying in-memory trie database.
+//主要功能：将状态树写入数据库
+//task1:更新脏账户表
+//task2:遍历被更新的账户, 将被更新的账户写入状态树
+//task3:将状态树写入数据库
 func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) {
 	defer s.clearJournalAndRefund()
 
+	//-------------------------------task1------------------------------------
+	//task1:更新脏账户表
+	//------------------------------------------------------------------------
 	for addr := range s.journal.dirties {
 		s.stateObjectsDirty[addr] = struct{}{}
 	}
 	// Commit objects to the trie.
+	//-------------------------------task2------------------------------------
+	//task2:遍历被更新的账户, 将被更新的账户写入状态树
+	//------------------------------------------------------------------------
 	for addr, stateObject := range s.stateObjects {
 		_, isDirty := s.stateObjectsDirty[addr]
 		switch {
 		case stateObject.suicided || (isDirty && deleteEmptyObjects && stateObject.empty()):
 			// If the object has been removed, don't bother syncing it
 			// and just mark it for deletion in the trie.
+			//如果账户已经销毁了,从状态树中删除账户
+			//如果账户为空，并且deleteEmptyObjects标志为true,从状态树中删除账户
 			s.deleteStateObject(stateObject)
 		case isDirty:
 			// Write any contract code associated with the state object
@@ -600,14 +734,21 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) 
 				stateObject.dirtyCode = false
 			}
 			// Write any storage changes in the state object to its storage trie.
+			//更新storage树
 			if err := stateObject.CommitTrie(s.db); err != nil {
 				return common.Hash{}, err
 			}
 			// Update the object in the main account trie.
+			//更新状态书
 			s.updateStateObject(stateObject)
 		}
+
+		//删除脏账户列表
 		delete(s.stateObjectsDirty, addr)
 	}
+	//-------------------------------task3------------------------------------
+	//task3:将状态树写入数据库
+	//------------------------------------------------------------------------
 	// Write trie changes.
 	root, err = s.trie.Commit(func(leaf []byte, parent common.Hash) error {
 		var account Account

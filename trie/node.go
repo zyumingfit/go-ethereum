@@ -34,6 +34,7 @@ type node interface {
 }
 
 type (
+	//分支节点
 	fullNode struct {
 		Children [17]node // Actual trie node data to encode/decode (needs custom encoder)
 		flags    nodeFlag

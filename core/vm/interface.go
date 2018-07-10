@@ -25,12 +25,17 @@ import (
 
 // StateDB is an EVM database for full state querying.
 type StateDB interface {
+	//创建账户
 	CreateAccount(common.Address)
 
+	//减余额
 	SubBalance(common.Address, *big.Int)
+	//加余额
 	AddBalance(common.Address, *big.Int)
+	//获取余额
 	GetBalance(common.Address) *big.Int
 
+	//获取账户nonce
 	GetNonce(common.Address) uint64
 	SetNonce(common.Address, uint64)
 
@@ -42,20 +47,28 @@ type StateDB interface {
 	AddRefund(uint64)
 	GetRefund() uint64
 
+	//获取账户状态
 	GetState(common.Address, common.Hash) common.Hash
+	//添加账户状态
 	SetState(common.Address, common.Hash, common.Hash)
 
+	//销毁账户
 	Suicide(common.Address) bool
+	//判断一个账户是否被销毁
 	HasSuicided(common.Address) bool
 
 	// Exist reports whether the given account exists in state.
 	// Notably this should also return true for suicided accounts.
+	//判断一个账户是否存在
 	Exist(common.Address) bool
 	// Empty returns whether the given account is empty. Empty
 	// is defined according to EIP161 (balance = nonce = code = 0).
+	//判断一个账户是否为空 balance=noce=code=0
 	Empty(common.Address) bool
 
+	//回复快照
 	RevertToSnapshot(int)
+	//生成快照
 	Snapshot() int
 
 	AddLog(*types.Log)

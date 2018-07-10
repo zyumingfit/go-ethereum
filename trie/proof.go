@@ -42,11 +42,15 @@ func (t *Trie) Prove(key []byte, fromLevel uint, proofDb ethdb.Putter) error {
 	for len(key) > 0 && tn != nil {
 		switch n := tn.(type) {
 		case *shortNode:
+			//如果给定的key小于要查询的key，说明树中不存在这个key
+			//如果给定的key不符合shortNode规则,说明树中不存在这个key
 			if len(key) < len(n.Key) || !bytes.Equal(n.Key, key[:len(n.Key)]) {
 				// The trie doesn't contain the key.
 				tn = nil
 			} else {
+				//将子节点复制给tn
 				tn = n.Val
+				//将子节点的key复制给key
 				key = key[len(n.Key):]
 			}
 			nodes = append(nodes, n)

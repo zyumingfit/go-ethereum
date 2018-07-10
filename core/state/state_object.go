@@ -61,7 +61,8 @@ func (self Storage) Copy() Storage {
 // Account values can be accessed and modified through the object.
 // Finally, call CommitTrie to write the modified storage trie into a database.
 type stateObject struct {
-	address  common.Address
+	address  common.Address  //账户地址
+	//账户地址的hash
 	addrHash common.Hash // hash of ethereum address of the account
 	data     Account
 	db       *StateDB
@@ -96,10 +97,11 @@ func (s *stateObject) empty() bool {
 // Account is the Ethereum consensus representation of accounts.
 // These objects are stored in the main account trie.
 type Account struct {
-	Nonce    uint64
-	Balance  *big.Int
+	Nonce    uint64  //账户的nonce值
+	Balance  *big.Int //账户余额
+	//账户的storage树根
 	Root     common.Hash // merkle root of the storage trie
-	CodeHash []byte
+	CodeHash []byte //账户的code hash值
 }
 
 // newObject creates a state object.
@@ -184,11 +186,13 @@ func (self *stateObject) GetState(db Database, key common.Hash) common.Hash {
 
 // SetState updates a value in account storage.
 func (self *stateObject) SetState(db Database, key, value common.Hash) {
+	//添加状态变更日志
 	self.db.journal.append(storageChange{
 		account:  &self.address,
 		key:      key,
 		prevalue: self.GetState(db, key),
 	})
+	//设置状态
 	self.setState(key, value)
 }
 
@@ -238,13 +242,16 @@ func (self *stateObject) CommitTrie(db Database) error {
 func (c *stateObject) AddBalance(amount *big.Int) {
 	// EIP158: We must check emptiness for the objects such that the account
 	// clearing (0,0,0 objects) can take effect.
+	//硬分叉处理
 	if amount.Sign() == 0 {
+		//stateObject.data.Nonce == 0 && stateObject.data.Balance.Sign() == 0 && bytes.Equal(stateObject.data.CodeHash, emptyCodeHash)
 		if c.empty() {
 			c.touch()
 		}
 
 		return
 	}
+	//设置账户余额
 	c.SetBalance(new(big.Int).Add(c.Balance(), amount))
 }
 
@@ -258,6 +265,7 @@ func (c *stateObject) SubBalance(amount *big.Int) {
 }
 
 func (self *stateObject) SetBalance(amount *big.Int) {
+	//添加余额变更事件
 	self.db.journal.append(balanceChange{
 		account: &self.address,
 		prev:    new(big.Int).Set(self.data.Balance),
@@ -266,6 +274,7 @@ func (self *stateObject) SetBalance(amount *big.Int) {
 }
 
 func (self *stateObject) setBalance(amount *big.Int) {
+	//增加余额
 	self.data.Balance = amount
 }
 

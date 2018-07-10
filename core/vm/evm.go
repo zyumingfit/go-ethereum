@@ -372,7 +372,7 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 //task2: 确保当前要创建的地址在世界状态中没有合约存在, 如果存在，直接返回
 //task3: 创建一个新账户,设置新账户的nonce为1
 //task4: 进行转账
-//task5: 创建一个待执行的合约对象,并执行
+//task5: 创建一个待执行的合约对象,并执行,返回合约代码，然后部署合约
 //task6: 处理返回值
 // Create creates a new contract using code as deployment code.
 func (evm *EVM) Create(caller ContractRef, code []byte, gas uint64, value *big.Int) (ret []byte, contractAddr common.Address, leftOverGas uint64, err error) {

@@ -37,6 +37,7 @@ type journalEntry interface {
 // exception or revertal request.
 type journal struct {
 	entries []journalEntry         // Current changes tracked by the journal
+	//地址变更次数
 	dirties map[common.Address]int // Dirty accounts and the number of changes
 }
 
@@ -57,6 +58,7 @@ func (j *journal) append(entry journalEntry) {
 
 // revert undoes a batch of journalled modifications along with any reverted
 // dirty handling too.
+//快照恢复
 func (j *journal) revert(statedb *StateDB, snapshot int) {
 	for i := len(j.entries) - 1; i >= snapshot; i-- {
 		// Undo the changes made by the operation
