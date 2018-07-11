@@ -39,12 +39,15 @@ type (
 		Children [17]node // Actual trie node data to encode/decode (needs custom encoder)
 		flags    nodeFlag
 	}
+	//扩展节点，只有一个子节点的节点
 	shortNode struct {
 		Key   []byte
 		Val   node
 		flags nodeFlag
 	}
+	//fullNode节点或者是shortNode节点的hash值
 	hashNode  []byte
+	//叶子节点
 	valueNode []byte
 )
 

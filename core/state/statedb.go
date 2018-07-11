@@ -88,12 +88,21 @@ type StateDB struct {
 	lock sync.Mutex
 }
 
+//主要功能：使用给定的树根创建一个世界状态
+//task1: 使用给定的树根构建状态树
+//task2:实例化StateDB类
 // Create a new state from a given trie.
 func New(root common.Hash, db Database) (*StateDB, error) {
+	//-------------------------------task1------------------------------------
+	//task1: 使用给定的树根构建状态树
+	//------------------------------------------------------------------------
 	tr, err := db.OpenTrie(root)
 	if err != nil {
 		return nil, err
 	}
+	//-------------------------------task2------------------------------------
+	//task2:实例化StateDB类
+	//------------------------------------------------------------------------
 	return &StateDB{
 		db:                db,
 		trie:              tr,
@@ -193,8 +202,17 @@ func (self *StateDB) Empty(addr common.Address) bool {
 }
 
 // Retrieve the balance from the given address or 0 if object not found
+//主要功能：获取一个账户的余额
+//task1: 获取账户对象stateObject
+//task2: 返回账户余额
 func (self *StateDB) GetBalance(addr common.Address) *big.Int {
+	//-------------------------------task1------------------------------------
+	//task1: 获取账户对象stateObject
+	//------------------------------------------------------------------------
 	stateObject := self.getStateObject(addr)
+	//-------------------------------task1------------------------------------
+	//task2: 返回账户余额
+	//------------------------------------------------------------------------
 	if stateObject != nil {
 		return stateObject.Balance()
 	}
@@ -343,16 +361,29 @@ func (self *StateDB) SetState(addr common.Address, key, value common.Hash) {
 //
 // The account's state object is still available until the state is committed,
 // getStateObject will return a non-nil account after Suicide.
+//主要功能：销毁账户
+//task1: 获取账户的sateObject对象
+//task2:添加删除日志
+//task3:标记账户自杀,余额清零
 func (self *StateDB) Suicide(addr common.Address) bool {
+	//-------------------------------task1------------------------------------
+	//task1: 获取账户的sateObject对象
+	//------------------------------------------------------------------------
 	stateObject := self.getStateObject(addr)
 	if stateObject == nil {
 		return false
 	}
+	//-------------------------------task2------------------------------------
+	//task2:添加删除日志
+	//------------------------------------------------------------------------
 	self.journal.append(suicideChange{
 		account:     &addr,
 		prev:        stateObject.suicided,
 		prevbalance: new(big.Int).Set(stateObject.Balance()),
 	})
+	//-------------------------------task3------------------------------------
+	//task3:标记账户自杀,余额清零
+	//------------------------------------------------------------------------
 	stateObject.markSuicided()
 	stateObject.data.Balance = new(big.Int)
 
@@ -570,8 +601,9 @@ func (self *StateDB) Snapshot() int {
 	id := self.nextRevisionId
 	self.nextRevisionId++
 	//-------------------------------task2------------------------------------
-	//task2:保存快照，快照id和日志深度
+	//task2:保存快照
 	//------------------------------------------------------------------------
+	//快照包括快照id和日志的深度
 	self.validRevisions = append(self.validRevisions, revision{id, self.journal.length()})
 	return id
 }
@@ -618,7 +650,7 @@ func (self *StateDB) GetRefund() uint64 {
 
 // Finalise finalises the state by removing the self destructed objects
 // and clears the journal as well as the refunds.
-//主要功能：根据操作日志，更新数据库，同时删除快照等信息
+//主要功能：根据操作日志，更状态树，同时删除快照等信息
 //task1:遍历被更新的账户, 将被更新的账户写入状态树
 //		step1: 确保账户缓存列表里也存在,否则跳过
 //		step2: 将账户的storage变更写入storage树，然后将账户写入状态树
@@ -709,7 +741,7 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) 
 	defer s.clearJournalAndRefund()
 
 	//-------------------------------task1------------------------------------
-	//task1:更新脏账户表
+	//task1:遍历日志列表，更新脏账户表
 	//------------------------------------------------------------------------
 	for addr := range s.journal.dirties {
 		s.stateObjectsDirty[addr] = struct{}{}
