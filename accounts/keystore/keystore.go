@@ -273,6 +273,7 @@ func (ks *KeyStore) SignTx(a accounts.Account, tx *types.Transaction, chainID *b
 	ks.mu.RLock()
 	defer ks.mu.RUnlock()
 
+	//查看账户是否在被解锁账户字典中
 	unlockedKey, found := ks.unlocked[a.Address]
 	if !found {
 		return nil, ErrLocked

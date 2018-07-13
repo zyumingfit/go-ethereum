@@ -27,9 +27,11 @@ import (
 // Manager is an overarching account manager that can communicate with various
 // backends for signing transactions.
 type Manager struct {
+	//后端
 	backends map[reflect.Type][]Backend // Index of backends currently registered
 	updaters []event.Subscription       // Wallet update subscriptions for all backends
 	updates  chan WalletEvent           // Subscription sink for backend wallet changes
+	//所有后端的钱包接口
 	wallets  []Wallet                   // Cache of all wallets from all registered backends
 
 	feed event.Feed // Wallet feed notifying of arrivals/departures
@@ -54,6 +56,9 @@ func NewManager(backends ...Backend) *Manager {
 		subs[i] = backend.Subscribe(updates)
 	}
 	// Assemble the account manager and return
+	//--------------------------------------task1--------------------------------------
+	//task1:初始化Manager类
+	//---------------------------------------------------------------------------------
 	am := &Manager{
 		backends: make(map[reflect.Type][]Backend),
 		updaters: subs,
@@ -65,6 +70,9 @@ func NewManager(backends ...Backend) *Manager {
 		kind := reflect.TypeOf(backend)
 		am.backends[kind] = append(am.backends[kind], backend)
 	}
+	//--------------------------------------task2--------------------------------------
+	//task2:启动事件监听go程
+	//---------------------------------------------------------------------------------
 	go am.update()
 
 	return am
@@ -97,8 +105,10 @@ func (am *Manager) update() {
 			// Wallet event arrived, update local cache
 			am.lock.Lock()
 			switch event.Kind {
+			//新钱包到达
 			case WalletArrived:
 				am.wallets = merge(am.wallets, event.Wallet)
+			//钱包丢弃
 			case WalletDropped:
 				am.wallets = drop(am.wallets, event.Wallet)
 			}
@@ -116,11 +126,13 @@ func (am *Manager) update() {
 }
 
 // Backends retrieves the backend(s) with the given type from the account manager.
+//获取后端列表
 func (am *Manager) Backends(kind reflect.Type) []Backend {
 	return am.backends[kind]
 }
 
 // Wallets returns all signer accounts registered under this account manager.
+//获取所有钱包
 func (am *Manager) Wallets() []Wallet {
 	am.lock.RLock()
 	defer am.lock.RUnlock()
@@ -130,6 +142,7 @@ func (am *Manager) Wallets() []Wallet {
 	return cpy
 }
 
+//通过URL获取钱包
 // Wallet retrieves the wallet associated with a particular URL.
 func (am *Manager) Wallet(url string) (Wallet, error) {
 	am.lock.RLock()

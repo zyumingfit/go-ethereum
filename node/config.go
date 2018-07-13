@@ -419,6 +419,7 @@ func makeAccountManager(conf *Config) (*accounts.Manager, string, error) {
 	backends := []accounts.Backend{
 		keystore.NewKeyStore(keydir, scryptN, scryptP),
 	}
+
 	if !conf.NoUSB {
 		// Start a USB hub for Ledger hardware wallets
 		if ledgerhub, err := usbwallet.NewLedgerHub(); err != nil {
