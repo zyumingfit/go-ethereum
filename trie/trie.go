@@ -210,23 +210,27 @@ func (t *Trie) Update(key, value []byte) {
 //参数：
 //     key: 键
 //     value:值
+//task1: 如果值不为空， 则插入新值
+//task2: 如果值为空， 则将原值删除
 func (t *Trie) TryUpdate(key, value []byte) error {
 	k := keybytesToHex(key)
-	//如果值不为空， 则插入新值
+	//-------------------------------task1------------------------------------
+	//task1: 如果值不为空， 则插入新值
+	//------------------------------------------------------------------------
 	if len(value) != 0 {
 		_, n, err := t.insert(t.root, nil, k, valueNode(value))
 		if err != nil {
 			return err
 		}
-		//树的任何变动会导致树根的改变
 		t.root = n
-	//如果值为空， 则将原值删除
+	//-------------------------------task1------------------------------------
+	//task2: 如果值为空， 则将原值删除
+	//------------------------------------------------------------------------
 	} else {
 		_, n, err := t.delete(t.root, nil, k)
 		if err != nil {
 			return err
 		}
-		//树的任何变动会导致树根的改变
 		t.root = n
 	}
 	return nil
@@ -254,6 +258,7 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 	case *shortNode: //如果向一个shortNode(扩展或叶子节点)节点插入,则向这个分支节点中相应的子节点插入
 		//计算待插入的key和shortNode的key的公共部分的长度
 		matchlen := prefixLen(key, n.Key)
+		fmt.Println(key, n.Key, matchlen)
 		// If the whole key matches, keep this short node as is
 		// and only update the value.
 		//如果公共部分长度相同,
@@ -298,7 +303,8 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		n.Children[key[0]] = nn
 		return true, n, nil
 
-	case nil: //如果向一个类型是nil的节点插入，说明当前要插入的节点是一颗空树，直接返回一个叶子节点
+	case nil: //如果向一个类型是nil的节点插入，说明当前要插入的节点是一颗空树，直接返回一个shortNode带叶子节点
+		fmt.Println("nil node hit, return short node")
 		return true, &shortNode{key, value, t.newFlag()}, nil
 
 	case hashNode: //如果向一个类型是hashNode节点插入， 那就先从数据库中恢复这颗树， 然后再向它插入
