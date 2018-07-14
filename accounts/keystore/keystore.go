@@ -299,13 +299,22 @@ func (ks *KeyStore) SignHashWithPassphrase(a accounts.Account, passphrase string
 
 // SignTxWithPassphrase signs the transaction if the private key matching the
 // given address can be decrypted with the given passphrase.
+//主要功能:使用密码来签名一个交易
+//task1:从私钥文件中获取私钥
+//task2:签名一个交易
 func (ks *KeyStore) SignTxWithPassphrase(a accounts.Account, passphrase string, tx *types.Transaction, chainID *big.Int) (*types.Transaction, error) {
+	//--------------------------------------task1--------------------------------------
+	//task1:从私钥文件中获取私钥
+	//---------------------------------------------------------------------------------
 	_, key, err := ks.getDecryptedKey(a, passphrase)
 	if err != nil {
 		return nil, err
 	}
 	defer zeroKey(key.PrivateKey)
 
+	//--------------------------------------task2--------------------------------------
+	//task2:签名一个交易
+	//---------------------------------------------------------------------------------
 	// Depending on the presence of the chain ID, sign with EIP155 or homestead
 	if chainID != nil {
 		return types.SignTx(tx, types.NewEIP155Signer(chainID), key.PrivateKey)
@@ -337,7 +346,14 @@ func (ks *KeyStore) Lock(addr common.Address) error {
 // If the account address is already unlocked for a duration, TimedUnlock extends or
 // shortens the active unlock timeout. If the address was previously unlocked
 // indefinitely the timeout is not altered.
+//主要功能:解锁一个账户，定时开放
+//task1:使用密码从秘钥文件中获取私钥
+//task2:如果当前账户已经处于解锁状态,先关闭延时go程
+//task3:启动延时go程， 同时将key放入unlock里列表
 func (ks *KeyStore) TimedUnlock(a accounts.Account, passphrase string, timeout time.Duration) error {
+	//--------------------------------------task1--------------------------------------
+	//task1:使用密码从秘钥文件中获取私钥
+	//---------------------------------------------------------------------------------
 	a, key, err := ks.getDecryptedKey(a, passphrase)
 	if err != nil {
 		return err
@@ -345,8 +361,12 @@ func (ks *KeyStore) TimedUnlock(a accounts.Account, passphrase string, timeout t
 
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
+	//--------------------------------------task2--------------------------------------
+	//task2:如果当前账户已经处于解锁状态,先关闭延时go程
+	//---------------------------------------------------------------------------------
 	u, found := ks.unlocked[a.Address]
 	if found {
+		//u.abort != nil 说明无限期开放的， 直接将获取上来的私钥清除
 		if u.abort == nil {
 			// The address was unlocked indefinitely, so unlocking
 			// it with a timeout would be confusing.
@@ -354,8 +374,12 @@ func (ks *KeyStore) TimedUnlock(a accounts.Account, passphrase string, timeout t
 			return nil
 		}
 		// Terminate the expire goroutine and replace it below.
+		//关闭延时go程， 后面根据新的延时参数重新启动
 		close(u.abort)
 	}
+	//--------------------------------------task3--------------------------------------
+	//task3:启动延时go程， 同时将key放入unlock里列表
+	//---------------------------------------------------------------------------------
 	if timeout > 0 {
 		u = &unlocked{Key: key, abort: make(chan struct{})}
 		go ks.expire(a.Address, u, timeout)
@@ -406,14 +430,27 @@ func (ks *KeyStore) expire(addr common.Address, u *unlocked, timeout time.Durati
 
 // NewAccount generates a new key and stores it into the key directory,
 // encrypting it with the passphrase.
+//主要功能:创建一个新账户,然后刷新钱包列表
+//task1:创建一个新账户，并保存加密保存到秘钥文件中
+//task2:添加KeyStore自己的cache缓存
+//task3:刷新钱包列表
 func (ks *KeyStore) NewAccount(passphrase string) (accounts.Account, error) {
+	//--------------------------------------task1--------------------------------------
+	//task1:创建一个新账户，并保存加密保存到秘钥文件中
+	//---------------------------------------------------------------------------------
 	_, account, err := storeNewKey(ks.storage, crand.Reader, passphrase)
 	if err != nil {
 		return accounts.Account{}, err
 	}
 	// Add the account to the cache immediately rather
 	// than waiting for file system notifications to pick it up.
+	//--------------------------------------task2--------------------------------------
+	//task2:添加KeyStore自己的cache缓存
+	//---------------------------------------------------------------------------------
 	ks.cache.add(account)
+	//--------------------------------------task3--------------------------------------
+	//task3:刷新钱包列表
+	//---------------------------------------------------------------------------------
 	ks.refreshWallets()
 	return account, nil
 }
