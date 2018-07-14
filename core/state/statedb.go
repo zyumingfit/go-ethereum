@@ -771,7 +771,7 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) 
 				return common.Hash{}, err
 			}
 			// Update the object in the main account trie.
-			//更新状态书
+			//更新状态树
 			s.updateStateObject(stateObject)
 		}
 
