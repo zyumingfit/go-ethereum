@@ -365,7 +365,7 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 
 //主要功能：部署一个合约,并执行合约的构造函数
 //参数： caller 转出方地址
-//      code   转入方地址
+//      code   代码（input）
 //      gas    当前交易的剩余gas
 //      value  转账额度
 //task1: 交易执行前的检查:1.递归深度判断 2.余额是否足够
@@ -374,10 +374,10 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 //task4: 进行转账
 //task5: 创建一个待执行的合约对象,并执行,返回合约代码，然后部署合约
 //task6: 处理返回值
-// Create creates a new contract using code as deployment code.
+	// Create creates a new contract using code as deployment code.
 func (evm *EVM) Create(caller ContractRef, code []byte, gas uint64, value *big.Int) (ret []byte, contractAddr common.Address, leftOverGas uint64, err error) {
 
-	//-------------------------------task1------------------------------------
+		//-------------------------------task1------------------------------------
 	//task1: 交易执行前的检查:1.递归深度判断 2.余额是否足够
 	//------------------------------------------------------------------------
 	// Depth check execution. Fail if we're trying to execute above the
@@ -390,13 +390,13 @@ func (evm *EVM) Create(caller ContractRef, code []byte, gas uint64, value *big.I
 	if !evm.CanTransfer(evm.StateDB, caller.Address(), value) {
 		return nil, common.Address{}, gas, ErrInsufficientBalance
 	}
-	//-------------------------------task2------------------------------------
-	//task2: 确保当前要创建的地址在世界状态中没有合约存在, 如果存在，直接返回
-	//------------------------------------------------------------------------
+
 	// Ensure there's no existing contract already at the designated address
 	nonce := evm.StateDB.GetNonce(caller.Address())
 	evm.StateDB.SetNonce(caller.Address(), nonce+1)
-
+	//-------------------------------task2------------------------------------
+	//task2: 确保当前要创建的地址在世界状态中没有合约存在, 如果存在，直接返回
+	//------------------------------------------------------------------------
 	//注意：合约的地址是发起部署合约的账户地址与nonce值做keccak256得到
 	contractAddr = crypto.CreateAddress(caller.Address(), nonce)
 	contractHash := evm.StateDB.GetCodeHash(contractAddr)

@@ -435,7 +435,7 @@ loop:
 				close(ch)
 			}
 			waiting, refreshDone = nil, nil
-			//验证数据库中节点有效性定时器, 10秒钟
+			//验证K桶中节点有效性定时器, 10秒钟
 		case <-revalidate.C:
 			go tab.doRevalidate(revalidateDone)
 		case <-revalidateDone:

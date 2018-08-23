@@ -271,7 +271,7 @@ func NewTxPool(config TxPoolConfig, chainconfig *params.ChainConfig, chain block
 	pool.wg.Add(1)
 
 	//--------------------------------------task3--------------------------------------
-	//task3:启动时间监听Goroutine
+	//task3:启动事件监听Goroutine
 	//---------------------------------------------------------------------------------
 	go pool.loop()
 

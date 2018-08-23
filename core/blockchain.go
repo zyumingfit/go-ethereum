@@ -181,7 +181,7 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 	if bc.genesisBlock == nil {
 		return nil, ErrNoGenesis
 	}
-	//加载规范连链的头区块到Blochain中
+	//加载规范连链的头区块到Blockchain中
 	if err := bc.loadLastState(); err != nil {
 		return nil, err
 	}
@@ -203,7 +203,7 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 	}
 	// Take ownership of this particular state
 	//--------------------------------------task2--------------------------------------
-	//task2:遍历badHash列表，如果发现规范链中存在badHash列表中的错误区块，则将规范链回滚到的错误区块的父区块
+	//task3:开启处理未来区块的Go程
 	//---------------------------------------------------------------------------------
 	go bc.update()
 	return bc, nil
@@ -251,7 +251,7 @@ func (bc *BlockChain) loadLastState() error {
 		}
 	}
 	//-----------------------------task2-------------------------
-	//task2:遍历badHash列表，如果发现规范链中存在badHash列表中的错误区块，则将规范链回滚到的错误区块的父区块
+	//task2:设置BlockChain.currentBlock为规范连头区块
 	//-----------------------------------------------------------
 	// Everything seems to be fine, set as the head block
 	bc.currentBlock.Store(currentBlock)
@@ -973,7 +973,7 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 	//--------------------------------task 1-------------------------------------
 	//task1:将当前区块的总难度写入数据库
 	//---------------------------------------------------------------------------
-	//使用 "h" + num + has 作为key
+	//使用 "h" + num + has "t"作为key
 	if err := bc.hc.WriteTd(block.Hash(), block.NumberU64(), externTd); err != nil {
 		return NonStatTy, err
 	}
@@ -982,8 +982,8 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 	//--------------------------------task 2-------------------------------------
 	//task2:使用数据库的Write接口将block(header, body)写入到数据库中
 	//---------------------------------------------------------------------------
-	//写header使用"h" + num + has 作为key
-	//写body使用"b" + num + has 作为key
+	//写header使用"h" + num + has  作为key
+	//写body使用"b" + num + has作为key
 	rawdb.WriteBlock(batch, block)
 
 	//--------------------------------task 3-------------------------------------
@@ -1091,7 +1091,7 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 		//task1: 更新规范链上区块号对应的Hash值
 		//task2: 更新数据库中的"LastBlock"的值
 		//task3: 更新BlockChain的CurrentBlock
-		//task4: 纠正BlockChain的错误延伸
+		//task4: 纠正HeaderChain的错误延伸
 		bc.insert(block)
 	}
 	//如果futureBlock中存在刚插入的区块， 就将它删除
@@ -1418,7 +1418,7 @@ func countTransactions(chain []*types.Block) (c int) {
 //task1:找到新链和原来规范链的共同祖先
 //task2:将新链插入到规范链中, 同时收集插入到规范连的所有交易
 //task3:找出待删除列表中的那些不在待添加的交易列表的交易,并从数据库中删除那些交易查询入口
-//task4:向外发送区块被重新组织的时间，向外发送日志删除的事件
+//task4:向外发送区块被重新组织的事件，向外发送日志删除的事件
 
 //能够进来的前提条件是newBlock总难度值大于oldBlock, 且newBlock的父亲不是oldBlock
 func (bc *BlockChain) reorg(oldBlock, newBlock *types.Block) error {

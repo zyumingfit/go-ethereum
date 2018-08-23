@@ -537,6 +537,8 @@ func accumulateRewards(config *params.ChainConfig, state *state.StateDB, header 
 	if config.IsByzantium(header.Number) {
 		blockReward = ByzantiumBlockReward
 	}
+	//叔块奖励 = (8 - (包含叔块的区块高度- 叔块高度)) *　普通区块奖励 / 8
+	//包含叔块的矿工奖励 = 包含个数 * 普通奖励  /32
 	// Accumulate the rewards for the miner and any included uncles
 	reward := new(big.Int).Set(blockReward)
 	r := new(big.Int)

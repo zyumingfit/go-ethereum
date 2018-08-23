@@ -619,6 +619,7 @@ func (self *StateDB) RevertToSnapshot(revid int) {
 	//-------------------------------task1------------------------------------
 	//task1:检查快照编号是否有效，如果idx无效，则终止程序
 	//------------------------------------------------------------------------
+	//找出validRevision[0,n)中最小的下标偏移i，能够满足第二个函数的f(i)==true
 	idx := sort.Search(len(self.validRevisions), func(i int) bool {
 		return self.validRevisions[i].id >= revid
 	})
@@ -690,7 +691,7 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 			s.updateStateObject(stateObject)
 		}
 		//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-		//step3:记录那些账户被更新过
+		//step3:记录哪些账户被更新过
 		//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 		s.stateObjectsDirty[addr] = struct{}{}
 	}
