@@ -306,7 +306,7 @@ func (self *worker) update() {
 
 		// Handle NewTxsEvent
 		//--------------------------------------task2--------------------------------------
-		//task3:接受到交易池更新事件后，提交一个新区块的挖矿工作
+		//task3:接受到交易池更新事件后，将接受到的交易应用到当前的工作环境上
 		//---------------------------------------------------------------------------------
 		case ev := <-self.txsCh:
 			// Apply transactions to the pending state if we're not mining.

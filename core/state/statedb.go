@@ -639,7 +639,7 @@ func (self *StateDB) RevertToSnapshot(revid int) {
 	//注意传入的是快照长度不是索引
 	self.journal.revert(self, snapshot)
 	//-------------------------------task4------------------------------------
-	//task4:移除恢复点后面的快照
+	//task4:移除恢复点及之后的快照
 	//------------------------------------------------------------------------
 	self.validRevisions = self.validRevisions[:idx]
 }
